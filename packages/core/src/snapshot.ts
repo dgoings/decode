@@ -46,6 +46,8 @@ export interface Snapshot {
   ref: string;
   analyzedAt: string;
   toolVersion: string;
+  /** History window (--since) the snapshot was built with. */
+  since?: string;
   languages: Record<string, LanguageTier>;
   files: FileEntry[];
   functions: FunctionEntry[];
@@ -56,5 +58,5 @@ export interface Snapshot {
 
 export type SnapshotMeta = Pick<
   Snapshot,
-  'repo' | 'repoId' | 'origin' | 'sha' | 'ref' | 'analyzedAt' | 'toolVersion'
+  'repo' | 'repoId' | 'origin' | 'sha' | 'ref' | 'analyzedAt' | 'toolVersion' | 'since'
 >;

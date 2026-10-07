@@ -55,6 +55,13 @@ test('analyzeRef: HEAD is analyzed and cached, re-run hits the cache, WORKTREE i
   const second = await analyzeRef(repo, 'HEAD', { since: '1y' });
   expect(second.cached).toBe(true);
   expect(second.snapshot).toEqual(s);
+  expect(s.since).toBe('1y');
+
+  // A different --since window is a cache miss and replaces the entry.
+  const narrower = await analyzeRef(repo, 'HEAD', { since: '30d' });
+  expect(narrower.cached).toBe(false);
+  expect(narrower.snapshot.since).toBe('30d');
+  expect((await analyzeRef(repo, 'HEAD', { since: '30d' })).cached).toBe(true);
 
   fs.writeFileSync(path.join(repo, 'a.ts'), 'export const h = () => 1;\n');
   const wt = await analyzeRef(repo, 'WORKTREE', { since: '1y' });

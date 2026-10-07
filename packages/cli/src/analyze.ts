@@ -34,7 +34,7 @@ export async function analyzeRef(
 
   if (!isWorktree && !opts.force) {
     const hit = readSnapshot(id, resolved.sha, version);
-    if (hit) return { snapshot: hit, cached: true };
+    if (hit && hit.since === opts.since) return { snapshot: hit, cached: true };
   }
 
   const snapshot = await withCheckout(root, resolved, async (dir) => {
@@ -46,6 +46,7 @@ export async function analyzeRef(
       ref,
       analyzedAt: new Date().toISOString(),
       toolVersion: version,
+      since: opts.since,
     };
     const { snapshot: adapterSnapshot, warnings } = await runAdapters(
       dir,
