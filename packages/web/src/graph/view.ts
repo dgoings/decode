@@ -8,7 +8,6 @@ import {
   buildGraphModel,
   cyclePath,
   findCycles,
-  groupsBelow,
   isOpaqueKind,
   type Cycles,
   type GraphModel,
@@ -16,6 +15,9 @@ import {
 } from './model.ts';
 
 cytoscape.use(fcose);
+
+/** Above this many visible nodes the initial/full layout uses faster settings. */
+const LARGE_GRAPH_NODES = 250;
 
 export interface GraphView {
   readonly el: HTMLElement;
@@ -166,12 +168,15 @@ export function createGraphView(container: HTMLElement): GraphView {
   function runLayout(eles: Core, fixed: NodeSingular[] = []): number {
     const t = performance.now();
     const incremental = fixed.length > 0;
+    // Big graphs get fcose's faster draft quality with fewer iterations.
+    const large = eles.nodes().length > LARGE_GRAPH_NODES;
     eles
       .layout({
         name: 'fcose',
         animate: false,
         randomize: !incremental,
-        quality: incremental ? 'proof' : 'default',
+        quality: incremental ? 'proof' : large ? 'draft' : 'default',
+        ...(large ? { numIter: 1000 } : {}),
         nodeDimensionsIncludeLabels: true,
         idealEdgeLength: 70,
         nodeRepulsion: 6500,
@@ -404,8 +409,8 @@ export function createGraphView(container: HTMLElement): GraphView {
       snap = next;
       model = buildGraphModel(next);
       cycles = findCycles(model);
-      // Direct children of the repo root expanded, everything deeper collapsed.
-      collapsed = groupsBelow(model, 1);
+      // Start fully expanded: every directory open, every file visible.
+      collapsed = new Set();
       cy.elements().remove();
       visible = null; // so the summary never shows the previous snapshot's counts
       tip.hidden = true;
