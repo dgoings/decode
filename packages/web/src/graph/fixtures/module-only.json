@@ -1,0 +1,176 @@
+{
+  "repo": "synthetic-go",
+  "repoId": "ffffffffffffffffffffffffffffffffffffffff",
+  "origin": "",
+  "sha": "d0d0000000000000000000000000000000000000",
+  "ref": "fixture",
+  "analyzedAt": "2026-10-07T00:00:00.000Z",
+  "toolVersion": "0.0.0",
+  "languages": {
+    "go": "baseline"
+  },
+  "files": [
+    {
+      "path": "cmd/server/main.go",
+      "lang": "go",
+      "loc": 140,
+      "code": 120,
+      "comments": 5
+    },
+    {
+      "path": "internal/api/handler.go",
+      "lang": "go",
+      "loc": 360,
+      "code": 340,
+      "comments": 5
+    },
+    {
+      "path": "internal/api/routes.go",
+      "lang": "go",
+      "loc": 110,
+      "code": 90,
+      "comments": 5
+    },
+    {
+      "path": "internal/store/store.go",
+      "lang": "go",
+      "loc": 430,
+      "code": 410,
+      "comments": 5
+    },
+    {
+      "path": "internal/store/query.go",
+      "lang": "go",
+      "loc": 240,
+      "code": 220,
+      "comments": 5
+    },
+    {
+      "path": "internal/model/order.go",
+      "lang": "go",
+      "loc": 170,
+      "code": 150,
+      "comments": 5
+    },
+    {
+      "path": "internal/model/user.go",
+      "lang": "go",
+      "loc": 100,
+      "code": 80,
+      "comments": 5
+    },
+    {
+      "path": "internal/auth/auth.go",
+      "lang": "go",
+      "loc": 220,
+      "code": 200,
+      "comments": 5
+    },
+    {
+      "path": "pkg/log/log.go",
+      "lang": "go",
+      "loc": 80,
+      "code": 60,
+      "comments": 5
+    }
+  ],
+  "functions": [],
+  "modules": [
+    {
+      "id": "github.com/acme/shop/cmd/server",
+      "kind": "package",
+      "files": [
+        "cmd/server/main.go"
+      ]
+    },
+    {
+      "id": "github.com/acme/shop/internal/api",
+      "kind": "package",
+      "files": [
+        "internal/api/handler.go",
+        "internal/api/routes.go"
+      ]
+    },
+    {
+      "id": "github.com/acme/shop/internal/store",
+      "kind": "package",
+      "files": [
+        "internal/store/store.go",
+        "internal/store/query.go"
+      ]
+    },
+    {
+      "id": "github.com/acme/shop/internal/model",
+      "kind": "package",
+      "files": [
+        "internal/model/order.go",
+        "internal/model/user.go"
+      ]
+    },
+    {
+      "id": "github.com/acme/shop/internal/auth",
+      "kind": "package",
+      "files": [
+        "internal/auth/auth.go"
+      ]
+    },
+    {
+      "id": "github.com/acme/shop/pkg/log",
+      "kind": "package",
+      "files": [
+        "pkg/log/log.go"
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "from": "github.com/acme/shop/internal/api",
+      "to": "github.com/acme/shop/internal/store",
+      "kind": "import",
+      "level": "module"
+    },
+    {
+      "from": "github.com/acme/shop/internal/store",
+      "to": "github.com/acme/shop/internal/model",
+      "kind": "import",
+      "level": "module"
+    },
+    {
+      "from": "github.com/acme/shop/internal/model",
+      "to": "github.com/acme/shop/internal/api",
+      "kind": "import",
+      "level": "module"
+    },
+    {
+      "from": "github.com/acme/shop/cmd/server",
+      "to": "github.com/acme/shop/internal/api",
+      "kind": "import",
+      "level": "module"
+    },
+    {
+      "from": "github.com/acme/shop/cmd/server",
+      "to": "github.com/acme/shop/pkg/log",
+      "kind": "import",
+      "level": "module"
+    },
+    {
+      "from": "github.com/acme/shop/internal/api",
+      "to": "github.com/acme/shop/internal/auth",
+      "kind": "import",
+      "level": "module"
+    },
+    {
+      "from": "github.com/acme/shop/internal/auth",
+      "to": "github.com/acme/shop/pkg/log",
+      "kind": "import",
+      "level": "module"
+    },
+    {
+      "from": "github.com/acme/shop/internal/store",
+      "to": "github.com/acme/shop/pkg/log",
+      "kind": "import",
+      "level": "module"
+    }
+  ],
+  "coupling": []
+}

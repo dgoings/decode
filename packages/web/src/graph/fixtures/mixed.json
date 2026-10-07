@@ -1,0 +1,175 @@
+{
+  "repo": "synthetic-mixed",
+  "repoId": "ffffffffffffffffffffffffffffffffffffffff",
+  "origin": "",
+  "sha": "d1d1000000000000000000000000000000000000",
+  "ref": "fixture",
+  "analyzedAt": "2026-10-07T00:00:00.000Z",
+  "toolVersion": "0.0.0",
+  "languages": {
+    "ts": "precise",
+    "go": "baseline"
+  },
+  "files": [
+    {
+      "path": "src/a/x.ts",
+      "lang": "ts",
+      "loc": 50,
+      "code": 40
+    },
+    {
+      "path": "src/a/y.ts",
+      "lang": "ts",
+      "loc": 35,
+      "code": 25
+    },
+    {
+      "path": "src/b/z.ts",
+      "lang": "ts",
+      "loc": 80,
+      "code": 70
+    },
+    {
+      "path": "src/b/w.ts",
+      "lang": "ts",
+      "loc": 22,
+      "code": 12
+    },
+    {
+      "path": "lib/u.ts",
+      "lang": "ts",
+      "loc": 40,
+      "code": 30
+    },
+    {
+      "path": "lib/v.ts",
+      "lang": "ts",
+      "loc": 28,
+      "code": 18
+    },
+    {
+      "path": "svc/main.go",
+      "lang": "go",
+      "loc": 100,
+      "code": 90
+    },
+    {
+      "path": "svc/db/db.go",
+      "lang": "go",
+      "loc": 170,
+      "code": 160
+    },
+    {
+      "path": "svc/db/conn.go",
+      "lang": "go",
+      "loc": 55,
+      "code": 45
+    },
+    {
+      "path": "svc/http/server.go",
+      "lang": "go",
+      "loc": 140,
+      "code": 130
+    }
+  ],
+  "functions": [],
+  "modules": [
+    {
+      "id": "src/a",
+      "kind": "dir",
+      "files": [
+        "src/a/x.ts",
+        "src/a/y.ts"
+      ]
+    },
+    {
+      "id": "src/b",
+      "kind": "dir",
+      "files": [
+        "src/b/z.ts",
+        "src/b/w.ts"
+      ]
+    },
+    {
+      "id": "lib",
+      "kind": "dir",
+      "files": [
+        "lib/u.ts",
+        "lib/v.ts"
+      ]
+    },
+    {
+      "id": "example.com/svc",
+      "kind": "package",
+      "files": [
+        "svc/main.go"
+      ]
+    },
+    {
+      "id": "example.com/svc/db",
+      "kind": "package",
+      "files": [
+        "svc/db/db.go",
+        "svc/db/conn.go"
+      ]
+    },
+    {
+      "id": "example.com/svc/http",
+      "kind": "package",
+      "files": [
+        "svc/http/server.go"
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "from": "src/a/x.ts",
+      "to": "src/b/z.ts",
+      "kind": "import",
+      "level": "file"
+    },
+    {
+      "from": "src/b/z.ts",
+      "to": "src/b/w.ts",
+      "kind": "import",
+      "level": "file"
+    },
+    {
+      "from": "src/b/w.ts",
+      "to": "lib/u.ts",
+      "kind": "import",
+      "level": "file"
+    },
+    {
+      "from": "src/a/y.ts",
+      "to": "lib/v.ts",
+      "kind": "import",
+      "level": "file"
+    },
+    {
+      "from": "lib/u.ts",
+      "to": "lib/v.ts",
+      "kind": "import",
+      "level": "file"
+    },
+    {
+      "from": "example.com/svc",
+      "to": "example.com/svc/http",
+      "kind": "import",
+      "level": "module"
+    },
+    {
+      "from": "example.com/svc/http",
+      "to": "example.com/svc/db",
+      "kind": "import",
+      "level": "module"
+    },
+    {
+      "from": "example.com/svc",
+      "to": "example.com/svc/db",
+      "kind": "import",
+      "level": "module"
+    }
+  ],
+  "coupling": []
+}

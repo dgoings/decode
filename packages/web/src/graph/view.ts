@@ -9,6 +9,7 @@ import {
   cyclePath,
   findCycles,
   groupsBelow,
+  isOpaqueKind,
   type Cycles,
   type GraphModel,
   type VisibleGraph,
@@ -88,6 +89,24 @@ const STYLE: cytoscape.StylesheetJson = [
       opacity: 1,
     },
   },
+  {
+    // Opaque modules (Go packages, namespaces, crates): rounded boxes sized by file count.
+    selector: 'node[?opaque]',
+    style: {
+      shape: 'round-rectangle',
+      width: 'data(size)',
+      height: 'data(size)',
+      'background-color': '#c8ece4',
+      'border-width': 1.5,
+      'border-color': '#2a9d8f',
+      color: '#134e48',
+    },
+  },
+  {
+    selector: ':parent[?opaque]',
+    style: { 'background-color': '#eaf7f4', 'background-opacity': 0.6, 'border-color': '#7cc4b8' },
+  },
+  { selector: 'edge[level = "module"]', style: { 'line-style': 'dashed', 'line-dash-pattern': [6, 3] } },
   { selector: 'node:selected', style: { 'border-width': 3, 'border-color': '#2f6fdb' } },
   { selector: 'edge:selected', style: { 'line-color': '#2f6fdb', 'target-arrow-color': '#2f6fdb' } },
 ];
@@ -137,8 +156,10 @@ export function createGraphView(container: HTMLElement): GraphView {
       id: n.id,
       parent: n.parent ?? undefined,
       type: n.type,
+      kind: n.kind,
+      opaque: isOpaqueKind(n.kind),
       label: group ? `${hasKids ? '▾' : '▸'} ${n.label}` : n.label,
-      size: group ? Math.round(22 + 5 * Math.sqrt(n.fileCount ?? 0)) : 14,
+      size: group || isOpaqueKind(n.kind) ? Math.round(22 + 5 * Math.sqrt(n.fileCount ?? 0)) : 14,
     };
   }
 
@@ -195,7 +216,7 @@ export function createGraphView(container: HTMLElement): GraphView {
       cy.add(
         visible!.edges.map((e) => ({
           group: 'edges' as const,
-          data: { id: e.id, source: e.from, target: e.to, count: e.count, cycleCount: e.cycleCount },
+          data: { id: e.id, source: e.from, target: e.to, count: e.count, cycleCount: e.cycleCount, level: e.level },
         })),
       );
     });
@@ -208,9 +229,10 @@ export function createGraphView(container: HTMLElement): GraphView {
   }
 
   function summaryText(): string {
-    if (!model || !visible) return '';
+    if (!model) return '';
     const level = model.edges.some((e) => e.level === 'module') ? 'dependency' : 'import';
-    return `${fmt(visible.nodes.length)} nodes shown · ${fmt(model.edges.length)} ${level} edges (${fmt(visible.edges.length)} shown) · ${cycles.components.length} cycle${cycles.components.length === 1 ? '' : 's'}`;
+    const shown = visible ? visible.edges.length : 0;
+    return `${fmt(visible ? visible.nodes.length : 0)} nodes shown · ${fmt(model.edges.length)} ${level} edges (${fmt(shown)} shown) · ${cycles.components.length} cycle${cycles.components.length === 1 ? '' : 's'}`;
   }
 
   function toggle(id: string): void {
@@ -247,19 +269,24 @@ export function createGraphView(container: HTMLElement): GraphView {
     if (!cycles.components.length) {
       const p = document.createElement('p');
       p.className = 'muted';
-      p.textContent = 'No import cycles.';
+      p.textContent = 'No dependency cycles.';
       side.append(p);
       return;
     }
     const ul = document.createElement('ul');
     for (const comp of cycles.components) {
       const path = cyclePath(model, comp);
-      const allFiles = comp.every((id) => model!.nodes.get(id)?.kind === 'file');
+      const kinds = comp.map((id) => model!.nodes.get(id)?.kind ?? '');
+      const allFiles = kinds.every((k) => k === 'file');
+      const allOpaque = kinds.every(isOpaqueKind);
+      // Files read fine by basename; package ids are only meaningful in full.
+      const label = (id: string) => (isOpaqueKind(model!.nodes.get(id)?.kind ?? '') ? id : basename(id));
       const li = document.createElement('li');
       const b = document.createElement('button');
       b.type = 'button';
       const more = comp.length > path.length ? ` (+${comp.length - path.length} more)` : '';
-      b.textContent = `${comp.length} ${allFiles ? 'files' : 'nodes'}: ${path.map(basename).join(' → ')}${more}`;
+      const noun = allFiles ? 'files' : allOpaque ? `${kinds[0] === 'module' ? 'module' : kinds[0]}s` : 'nodes';
+      b.textContent = `${comp.length} ${noun}: ${path.map(label).join(' → ')}${more}`;
       b.title = [...path, path[0]].join('\n→ ');
       b.addEventListener('click', () => focusCycle(comp));
       li.append(b);
@@ -279,7 +306,7 @@ export function createGraphView(container: HTMLElement): GraphView {
     counts.textContent = summaryText();
     const hint = document.createElement('span');
     hint.className = 'muted graph-hint';
-    hint.textContent = 'Double-click a directory to expand/collapse';
+    hint.textContent = 'Double-click a group to expand/collapse';
     const btn = (label: string, fn: () => void) => {
       const b = document.createElement('button');
       b.type = 'button';
@@ -324,28 +351,43 @@ export function createGraphView(container: HTMLElement): GraphView {
   }
 
   const na = (v: number | undefined) => (v === undefined ? 'n/a' : fmt(v));
-  const sumCount = (edges: cytoscape.EdgeCollection) => edges.reduce((s, e) => s + (e.data('count') as number), 0);
+  /** Model edges leaving / entering `id` and everything under it (correct for expanded compounds too). */
+  function crossing(id: string): { out: number; in: number } {
+    const inside = (x: string) => x === id || ancestors(model!, x).includes(id);
+    let o = 0;
+    let i = 0;
+    for (const e of model!.edges) {
+      const f = inside(e.from);
+      const t = inside(e.to);
+      if (f && !t) o++;
+      else if (t && !f) i++;
+    }
+    return { out: o, in: i };
+  }
 
   cy.on('mouseover', 'node', (e) => {
     const n = model?.nodes.get((e.target as NodeSingular).id());
     if (!n) return;
-    const el = e.target as NodeSingular;
     const rows: Array<[string, string]> = [];
-    if (n.type === 'group') {
+    if (n.type === 'group' || isOpaqueKind(n.kind)) {
       rows.push(['Files', na(n.fileCount)], ['Code', `${na(n.code)} lines`]);
     } else if (n.metrics) {
       rows.push(['Code', `${na(n.metrics.code)} lines`]);
       rows.push(['Complexity', `${na(n.metrics.complexityMax)} max`]);
       rows.push(['Churn', `${na(n.metrics.churnCommits)} commits`]);
     }
-    rows.push(['Imports', `${fmt(sumCount(el.outgoers('edge')))} out / ${fmt(sumCount(el.incomers('edge')))} in`]);
-    showTip({ title: n.id + (n.type === 'group' ? '/' : ''), rows }, e.renderedPosition);
+    if (isOpaqueKind(n.kind) && n.type === 'leaf') rows.unshift(['Kind', n.kind]);
+    const c = crossing(n.id);
+    rows.push(['Imports', `${fmt(c.out)} out / ${fmt(c.in)} in`]);
+    const title = n.type === 'group' && !n.id.endsWith('/') ? `${n.id}/` : n.id;
+    showTip({ title, rows }, e.renderedPosition);
   });
   cy.on('mouseover', 'edge', (e) => {
     const el = e.target as EdgeSingular;
     const count = el.data('count') as number;
     const inCycle = el.data('cycleCount') as number;
     const rows: Array<[string, string]> = [['Imports', fmt(count)]];
+    if (el.data('level') === 'module') rows.push(['Level', 'module']);
     if (inCycle) rows.push(['In cycles', fmt(inCycle)]);
     showTip({ title: `${el.source().id()} → ${el.target().id()}`, rows }, e.renderedPosition);
   });
@@ -365,6 +407,7 @@ export function createGraphView(container: HTMLElement): GraphView {
       // Direct children of the repo root expanded, everything deeper collapsed.
       collapsed = groupsBelow(model, 1);
       cy.elements().remove();
+      visible = null; // so the summary never shows the previous snapshot's counts
       tip.hidden = true;
       const hasEdges = model.edges.length > 0;
       empty.hidden = hasEdges;
@@ -373,7 +416,6 @@ export function createGraphView(container: HTMLElement): GraphView {
       renderBar();
       if (!hasEdges) {
         empty.textContent = 'No dependency edges in this snapshot.';
-        visible = null;
         return;
       }
       cy.resize();
