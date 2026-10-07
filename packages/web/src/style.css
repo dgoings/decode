@@ -1,0 +1,71 @@
+:root {
+  --fg: #1d2025;
+  --muted: #7a808a;
+  --line: #e2e4e8;
+  --bg: #fff;
+  --panel: #f7f8fa;
+  --accent: #2f6fdb;
+  --error: #b42318;
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  font-size: 14px;
+  color: var(--fg);
+  background: var(--bg);
+}
+* { box-sizing: border-box; }
+body { margin: 0; }
+#app { display: flex; flex-direction: column; height: 100vh; }
+
+header {
+  display: flex; align-items: center; gap: 16px;
+  padding: 8px 16px; border-bottom: 1px solid var(--line);
+}
+header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+.status { color: var(--muted); font-size: 13px; margin-left: auto; }
+.status[data-kind='error'] { color: var(--error); }
+
+.body { display: flex; flex: 1; min-height: 0; }
+.refpicker {
+  width: 280px; flex-shrink: 0; overflow-y: auto;
+  border-right: 1px solid var(--line); background: var(--panel); padding: 8px 0;
+}
+.refpicker h2 {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--muted); margin: 12px 16px 4px;
+}
+.refpicker ul { list-style: none; margin: 0; padding: 0; }
+.ref {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px;
+  width: 100%; padding: 6px 16px; border: 0; background: none;
+  font: inherit; color: inherit; text-align: left; cursor: pointer;
+}
+.ref:hover:not(:disabled) { background: #eceef2; }
+.ref:disabled { cursor: default; }
+.ref.selected { background: #e3ecfb; box-shadow: inset 3px 0 var(--accent); }
+.ref-name { font-weight: 500; overflow-wrap: anywhere; }
+.ref-detail { flex-basis: 100%; font-size: 12px; color: var(--muted); }
+.ref.unanalyzed .ref-name { color: var(--muted); font-weight: 400; }
+.ref-note { font-size: 12px; color: var(--muted); font-style: italic; }
+.refpicker .error { margin: 0 16px 6px; }
+
+.badges { display: inline-flex; gap: 4px; }
+.badge {
+  font-size: 11px; padding: 0 5px; border-radius: 3px; border: 1px solid;
+}
+.badge.tier-precise { color: #166534; border-color: #86c79b; background: #ecf8f0; }
+.badge.tier-baseline { color: #8a5a00; border-color: #e6c37a; background: #fdf6e6; }
+
+.spinner {
+  display: inline-block; width: 10px; height: 10px; vertical-align: -1px;
+  border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+main { flex: 1; overflow: auto; padding: 24px; }
+.muted { color: var(--muted); }
+.error { color: var(--error); font-size: 12px; }
+.summary h2 { font-size: 18px; margin: 0 0 12px; }
+.summary h2 code { font-size: 13px; color: var(--muted); font-weight: 400; }
+.summary dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; }
+.summary dt { color: var(--muted); }
+.summary dd { margin: 0; }
