@@ -92,7 +92,12 @@ function readBody(req: http.IncomingMessage): Promise<string> {
   });
 }
 
-export function createServer(opts: ServerOptions): http.Server {
+export type CodevizServer = http.Server & {
+  /** Resolves once no analysis is in flight (so temp worktrees have been cleaned up). */
+  idle(): Promise<void>;
+};
+
+export function createServer(opts: ServerOptions): CodevizServer {
   const log = opts.log ?? (() => {});
   const root = git(opts.root, ['rev-parse', '--show-toplevel']);
   const id = repoId(root);
@@ -100,6 +105,7 @@ export function createServer(opts: ServerOptions): http.Server {
   const webDir = findWebDir();
   let worktree: Snapshot | null = null;
   const inFlight = new Set<string>();
+  const running = new Set<Promise<unknown>>();
 
   async function handleAnalyze(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     let body: { ref?: unknown; force?: unknown };
@@ -113,7 +119,13 @@ export function createServer(opts: ServerOptions): http.Server {
     if (inFlight.has(ref)) return sendJson(res, 409, { error: 'in progress' });
     inFlight.add(ref);
     try {
-      const { snapshot, cached } = await analyzeRef(root, ref, { since: opts.since, log, force: body.force === true });
+      const job = analyzeRef(root, ref, { since: opts.since, log, force: body.force === true });
+      running.add(job);
+      job.then(
+        () => running.delete(job),
+        () => running.delete(job),
+      );
+      const { snapshot, cached } = await job;
       if (snapshot.sha === 'WORKTREE') worktree = snapshot;
       sendJson(res, 200, { sha: snapshot.sha, ref, cached });
     } catch (err) {
@@ -186,13 +198,18 @@ export function createServer(opts: ServerOptions): http.Server {
     handleStatic(res, p);
   }
 
-  return http.createServer((req, res) => {
+  const server = http.createServer((req, res) => {
     const t0 = Date.now();
     res.on('finish', () => log(`${req.method} ${req.url} ${res.statusCode} ${Date.now() - t0}ms`));
     handle(req, res).catch((err) => {
       if (!res.headersSent) sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) });
       else res.end();
     });
+  });
+  return Object.assign(server, {
+    idle: async () => {
+      while (running.size > 0) await Promise.allSettled([...running]);
+    },
   });
 }
 

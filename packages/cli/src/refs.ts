@@ -60,6 +60,8 @@ export async function withCheckout<T>(
     }
   };
   const onSigint = () => {
+    // Another listener (codeviz serve) owns shutdown and waits for us; our finally does the cleanup.
+    if (process.listenerCount('SIGINT') > 1) return;
     cleanup();
     process.exit(130);
   };

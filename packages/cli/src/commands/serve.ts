@@ -104,11 +104,19 @@ export async function serveCommand(args: string[]): Promise<number> {
   if (open) openBrowser(url);
 
   return new Promise<number>((resolve) => {
-    process.once('SIGINT', () => {
+    let stopping = false;
+    process.on('SIGINT', () => {
+      if (stopping) return; // a pending analysis' own SIGINT handler cleans up its temp worktree
+      stopping = true;
+      console.error('codeviz serve: shutting down');
       server.close();
       server.closeAllConnections?.();
-      resolve(0);
-      process.exit(0);
+      // Never exit mid-analysis: withCheckout must get to remove its temporary git worktree.
+      const cap = new Promise<void>((r) => setTimeout(r, 15_000).unref());
+      void Promise.race([server.idle(), cap]).then(() => {
+        resolve(0);
+        process.exit(0);
+      });
     });
   });
 }
