@@ -8,6 +8,7 @@ import {
   buildGraphModel,
   cyclePath,
   findCycles,
+  groupsBelow,
   isOpaqueKind,
   type Cycles,
   type GraphModel,
@@ -147,6 +148,7 @@ export function createGraphView(container: HTMLElement): GraphView {
   let collapsed = new Set<string>();
   let visible: VisibleGraph | null = null;
   let counts: HTMLElement | null = null;
+  let toggleAll: HTMLButtonElement | null = null;
 
   function nodeData(n: VisibleGraph['nodes'][number]): Record<string, unknown> {
     const group = n.type === 'group';
@@ -225,6 +227,7 @@ export function createGraphView(container: HTMLElement): GraphView {
       runLayout(cy, pinned.toArray() as NodeSingular[]);
     }
     if (counts) counts.textContent = summaryText();
+    if (toggleAll) toggleAll.textContent = collapsed.size > 0 ? 'Expand all' : 'Collapse all';
   }
 
   function summaryText(): string {
@@ -306,7 +309,7 @@ export function createGraphView(container: HTMLElement): GraphView {
     const hint = document.createElement('span');
     hint.className = 'muted graph-hint';
     hint.textContent = 'Double-click a group to expand/collapse';
-    const btn = (label: string, fn: () => void) => {
+    const btn = (label: string, fn: () => void): HTMLButtonElement => {
       const b = document.createElement('button');
       b.type = 'button';
       b.className = 'btn';
@@ -314,6 +317,15 @@ export function createGraphView(container: HTMLElement): GraphView {
       b.addEventListener('click', fn);
       return b;
     };
+    toggleAll = btn('', () => {
+      if (!model) return;
+      collapsed = collapsed.size > 0 ? new Set() : groupsBelow(model, 1);
+      tip.hidden = true;
+      update(false);
+      runLayout(cy);
+      cy.fit(undefined, 30);
+    });
+    toggleAll.textContent = collapsed.size > 0 ? 'Expand all' : 'Collapse all';
     const tools = document.createElement('span');
     tools.className = 'graph-tools';
     tools.append(
@@ -322,6 +334,7 @@ export function createGraphView(container: HTMLElement): GraphView {
         runLayout(cy);
         cy.fit(undefined, 30);
       }),
+      toggleAll,
     );
     bar.replaceChildren(ref, sha, counts, tierBadges(snap.languages), hint, tools);
   }
@@ -403,8 +416,8 @@ export function createGraphView(container: HTMLElement): GraphView {
       snap = next;
       model = buildGraphModel(next);
       cycles = findCycles(model);
-      // Start fully expanded: every directory open, every file visible.
-      collapsed = new Set();
+      // Start collapsed: only the repo root's direct children are open.
+      collapsed = groupsBelow(model, 1);
       cy.elements().remove();
       visible = null; // so the summary never shows the previous snapshot's counts
       tip.hidden = true;
