@@ -2,4 +2,5 @@ export * from './repo.ts';
 export * from './cache.ts';
 export * from './refs.ts';
 export * from './analyze.ts';
+export * from './compare.ts';
 export * from './server.ts';
