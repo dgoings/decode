@@ -1,4 +1,4 @@
-import type { FileEntry, Snapshot, SnapshotMeta } from './snapshot.ts';
+import type { FileEntry, ModuleEntry, Snapshot, SnapshotMeta } from './snapshot.ts';
 
 function dedupe<T>(items: T[], key: (t: T) => string): T[] {
   const seen = new Set<string>();
@@ -10,6 +10,16 @@ function dedupe<T>(items: T[], key: (t: T) => string): T[] {
   });
 }
 
+// Same id: union files (order preserved, deduped); later kind wins.
+function mergeModules(mods: ModuleEntry[]): ModuleEntry[] {
+  const out = new Map<string, ModuleEntry>();
+  for (const m of mods) {
+    const prev = out.get(m.id);
+    out.set(m.id, prev ? { ...m, files: [...new Set([...prev.files, ...m.files])] } : { ...m, files: [...new Set(m.files)] });
+  }
+  return [...out.values()];
+}
+
 /**
  * Combine partial snapshots into one complete Snapshot.
  *
@@ -18,7 +28,7 @@ function dedupe<T>(items: T[], key: (t: T) => string): T[] {
  * earlier scalar (e.g. loc), and nested objects (complexity, churn) are replaced
  * whole by the later part. Undefined fields never override. `languages` is a
  * union, later wins. Arrays concatenate with first-occurrence dedupe
- * (modules by id, edges by from+to+level, coupling by a+b, functions by
+ * (modules by id, edges by from+to+kind+level, coupling by a+b, functions by
  * file+name+line).
  */
 export function mergeSnapshots(meta: SnapshotMeta, parts: Partial<Snapshot>[]): Snapshot {
@@ -39,8 +49,8 @@ export function mergeSnapshots(meta: SnapshotMeta, parts: Partial<Snapshot>[]): 
     languages,
     files: [...files.values()],
     functions: dedupe(all((p) => p.functions), (f) => `${f.file}\0${f.name}\0${f.line}`),
-    modules: dedupe(all((p) => p.modules), (m) => m.id),
-    edges: dedupe(all((p) => p.edges), (e) => `${e.from}\0${e.to}\0${e.level}`),
+    modules: mergeModules(all((p) => p.modules)),
+    edges: dedupe(all((p) => p.edges), (e) => `${e.from}\0${e.to}\0${e.kind}\0${e.level}`),
     coupling: dedupe(all((p) => p.coupling), (c) => `${c.a}\0${c.b}`),
   };
 }

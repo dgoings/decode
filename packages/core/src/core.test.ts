@@ -21,7 +21,7 @@ test('merge overlapping and disjoint files', () => {
     { path: 'b.ts', loc: 5 },
     { path: 'c.ts', loc: 1 },
   ]);
-  expect(s.modules).toHaveLength(1);
+  expect(s.modules).toEqual([{ id: 'm', kind: 'dir', files: ['a.ts'] }]);
   expect(s.edges).toEqual([]);
 });
 
@@ -35,4 +35,13 @@ test('gzip round trip', () => {
     },
   ]);
   expect(decodeSnapshot(encodeSnapshot(s))).toEqual(s);
+});
+
+test('module files union and edge kind kept', () => {
+  const s = mergeSnapshots(meta, [
+    { modules: [{ id: 'm', kind: 'dir', files: ['a'] }], edges: [{ from: 'a', to: 'b', kind: 'import', level: 'file' }] },
+    { modules: [{ id: 'm', kind: 'package', files: ['a', 'b'] }], edges: [{ from: 'a', to: 'b', kind: 'reexport', level: 'file' }] },
+  ]);
+  expect(s.modules).toEqual([{ id: 'm', kind: 'package', files: ['a', 'b'] }]);
+  expect(s.edges).toHaveLength(2);
 });
