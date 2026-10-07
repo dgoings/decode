@@ -88,3 +88,85 @@ test('empty snapshot does not throw', () => {
   expect(findCycles(m).components).toEqual([]);
   expect(aggregateEdges(m, new Set()).edges).toEqual([]);
 });
+
+// Seam 4: module-level edges and opaque (package) modules. Fixtures are also used by the headless UI check.
+import moduleOnlyJson from './fixtures/module-only.json';
+import mixedJson from './fixtures/mixed.json';
+
+const moduleOnly = moduleOnlyJson as unknown as Snapshot;
+const mixed = mixedJson as unknown as Snapshot;
+const P = 'github.com/acme/shop/';
+
+test('module-only snapshot: 6 opaque package leaves, no compounds, no files, 8 module edges, 3-cycle', () => {
+  const m = buildGraphModel(moduleOnly);
+  const nodes = [...m.nodes.values()];
+  expect(nodes.length).toBe(6);
+  expect(nodes.every((n) => n.type === 'leaf' && n.kind === 'package' && n.parent === null)).toBe(true);
+  expect(groupsBelow(m, 0).size).toBe(0);
+  const api = m.nodes.get(`${P}internal/api`)!;
+  expect(api.label).toBe('api');
+  expect(api.fileCount).toBe(2);
+  expect(api.code).toBe(430);
+  expect(m.edges.length).toBe(8);
+  expect(m.edges.every((e) => e.level === 'module')).toBe(true);
+  const c = findCycles(m);
+  expect(c.components).toEqual([[`${P}internal/api`, `${P}internal/model`, `${P}internal/store`]]);
+  expect(c.edgeKeys.size).toBe(3);
+  expect(cyclePath(m, c.components[0]!)).toEqual([`${P}internal/api`, `${P}internal/store`, `${P}internal/model`]);
+  const v = aggregateEdges(m, new Set(), c);
+  expect(v.nodes.length).toBe(6);
+  expect(v.edges.length).toBe(8);
+  expect(v.edges.every((e) => e.level === 'module')).toBe(true);
+});
+
+test('mixed snapshot: dir tree and package nodes coexist, each edge keeps its level, nothing duplicated', () => {
+  const m = buildGraphModel(mixed);
+  const G = 'example.com/svc';
+  const levels = (lvl: string) => m.edges.filter((e) => e.level === lvl);
+  expect(levels('file').length).toBe(5);
+  expect(levels('module').length).toBe(3);
+  expect(new Set(m.edges.map((e) => e.key)).size).toBe(8);
+  // Go files are never nodes and no directories are invented from package ids or Go file paths.
+  for (const id of ['svc', 'svc/main.go', 'example.com', 'svc/db']) expect(m.nodes.has(id)).toBe(false);
+  expect(m.nodes.get('src/a/x.ts')!.parent).toBe('src/a');
+  expect(m.nodes.get('src')!.kind).toBe('dir');
+  // Real nesting (example.com/svc contains example.com/svc/db, /http): one package compound.
+  const g = m.nodes.get(`${G}/`)!;
+  expect(g).toMatchObject({ type: 'group', kind: 'package', parent: null, label: 'svc/', fileCount: 4, code: 425 });
+  expect(m.children.get(`${G}/`)!.sort()).toEqual([G, `${G}/db`, `${G}/http`]);
+  expect(m.nodes.get(G)).toMatchObject({ type: 'leaf', kind: 'package', label: 'svc', fileCount: 1, code: 90 });
+  // Expanded: every model edge is visible once, with its level.
+  const v = aggregateEdges(m, new Set(), findCycles(m));
+  expect(v.edges.length).toBe(8);
+  expect(v.edges.filter((e) => e.level === 'module').map((e) => [e.from, e.to])).toEqual([
+    [G, `${G}/http`],
+    [`${G}/http`, `${G}/db`],
+    [G, `${G}/db`],
+  ]);
+  // Collapsing the dir tree never swallows module edges, and vice versa.
+  const c = aggregateEdges(m, new Set(['src', `${G}/`]));
+  expect(c.edges.map((e) => [e.from, e.to, e.level, e.count])).toEqual([
+    ['src', 'lib/u.ts', 'file', 1],
+    ['src', 'lib/v.ts', 'file', 1],
+    ['lib/u.ts', 'lib/v.ts', 'file', 1],
+  ]);
+  expect(groupsBelow(m, 0)).toEqual(new Set(['src', 'src/a', 'src/b', 'lib', `${G}/`]));
+});
+
+test('opaque module ids without real nesting stay flat; unknown module endpoints become opaque leaves', () => {
+  const s = {
+    files: [],
+    modules: [
+      { id: 'a/x', kind: 'namespace', files: [] },
+      { id: 'a/y', kind: 'namespace', files: [] },
+    ],
+    edges: [
+      { from: 'a/x', to: 'a/y', kind: 'import', level: 'module' },
+      { from: 'a/y', to: 'ext/z', kind: 'import', level: 'module' },
+    ],
+  } as unknown as Snapshot;
+  const m = buildGraphModel(s);
+  expect([...m.nodes.keys()].sort()).toEqual(['a/x', 'a/y', 'ext/z']);
+  expect([...m.nodes.values()].every((n) => n.type === 'leaf' && n.parent === null)).toBe(true);
+  expect(m.nodes.get('ext/z')!.kind).toBe('module');
+});

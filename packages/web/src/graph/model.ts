@@ -1,6 +1,13 @@
-// Pure dependency-graph model: no DOM. Nodes are "leaves" (files, or modules that have no
-// children) and "groups" (directory/module compounds). Nothing here depends on whether
-// edges are file-level or module-level, so a module-only snapshot renders the same way.
+// Pure dependency-graph model: no DOM. Nodes are "leaves" (files, opaque modules, or modules
+// that have no children) and "groups" (directory/module compounds).
+//
+// Three snapshot shapes are handled (design seam 4):
+//  1. file-level edges + 'dir' modules: dirs nest by path, files are leaves under them;
+//  2. module-level edges + 'package' | 'namespace' | 'crate' modules: each module is an opaque
+//     leaf (its id is never split into directories, its files never become nodes). A package
+//     group exists only for real nesting: when module `a` and module `a/b` both exist, both
+//     leaves sit in a compound `a/`;
+//  3. both at once: the dir tree and the package nodes coexist, and each edge keeps its level.
 import type { FileEntry, Snapshot } from '@codeviz/core';
 
 export interface NodeMetrics {
@@ -16,13 +23,16 @@ export interface GraphNode {
   parent: string | null;
   /** 'group' = directory/module compound; 'leaf' = file (or a module with no member nodes). */
   type: 'group' | 'leaf';
-  /** Module kind for groups ('dir', 'package', ...); 'file' for files. */
+  /**
+   * 'file' for files; the module kind ('dir', 'package', 'namespace', 'crate') for modules and
+   * module groups; 'module' for a module-edge endpoint with no matching module entry.
+   */
   kind: string;
   /** 0 for top-level nodes. */
   depth: number;
   /** File metrics (leaves that are files). */
   metrics?: NodeMetrics;
-  /** Groups: number of file leaves underneath and their summed code lines. */
+  /** Groups: files underneath and their summed code lines. Opaque module leaves: their own files. */
   fileCount?: number;
   code?: number;
 }
@@ -50,6 +60,8 @@ export interface VisibleEdge {
   count: number;
   /** How many of those lie inside a cycle (see findCycles). */
   cycleCount: number;
+  /** 'module' if any merged model edge is module-level, else 'file'. */
+  level: 'file' | 'module';
 }
 
 export interface VisibleGraph {
@@ -73,6 +85,9 @@ const ROOT_MODULE = '.';
 const basename = (p: string) => p.slice(p.lastIndexOf('/') + 1) || p;
 const dirname = (p: string) => (p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '');
 
+/** True for nodes whose id is an opaque module id rather than a path (packages, namespaces, crates). */
+export const isOpaqueKind = (kind: string): boolean => kind !== 'file' && kind !== 'dir';
+
 export function buildGraphModel(snap: Snapshot): GraphModel {
   const nodes = new Map<string, GraphNode>();
   const children = new Map<string, string[]>();
@@ -80,6 +95,7 @@ export function buildGraphModel(snap: Snapshot): GraphModel {
   const moduleOfFile = new Map<string, string>();
   const modules = snap.modules ?? [];
   const edges = snap.edges ?? [];
+  const dirModules = modules.filter((m) => m.kind === 'dir');
 
   const link = (id: string, parent: string | null) => {
     const k = parent ?? '';
@@ -94,6 +110,7 @@ export function buildGraphModel(snap: Snapshot): GraphModel {
     const existing = nodes.get(id);
     if (existing) {
       if (existing.type === 'group') return id;
+      if (isOpaqueKind(existing.kind)) return null; // never nest paths under a package node
       // A path we first saw as an edge endpoint turned out to be a module: promote it.
       existing.type = 'group';
       existing.kind = kind;
@@ -105,7 +122,46 @@ export function buildGraphModel(snap: Snapshot): GraphModel {
     return id;
   };
 
-  for (const m of modules) {
+  // Opaque modules: the snapshot's non-dir modules, plus module-edge endpoints that match no
+  // module, file or dir (kind 'module'). Created first so dir/file handling never claims their ids.
+  const opaque = new Map<string, { kind: string; files: string[] }>();
+  for (const m of modules) if (m.kind !== 'dir') opaque.set(m.id, { kind: m.kind, files: m.files });
+  const known = new Set<string>([...modules.map((m) => m.id), ...filesByPath.keys()]);
+  for (const e of edges) {
+    if (e.level !== 'module') continue;
+    for (const id of [e.from, e.to]) if (!known.has(id) && !opaque.has(id)) opaque.set(id, { kind: 'module', files: [] });
+  }
+  // Nearest proper `/`-prefix that is itself an opaque module; a module with such descendants
+  // gets a compound `<id>/` holding itself and them. Otherwise everything stays flat.
+  const owner = new Map<string, string>();
+  for (const id of opaque.keys()) {
+    for (let p = dirname(id); p; p = dirname(p)) {
+      if (opaque.has(p)) {
+        owner.set(id, p);
+        break;
+      }
+    }
+  }
+  const nesting = new Set(owner.values());
+  const ensureOpaqueGroup = (moduleId: string): string => {
+    const gid = `${moduleId}/`;
+    if (!nodes.has(gid)) {
+      const parent = owner.has(moduleId) ? ensureOpaqueGroup(owner.get(moduleId)!) : null;
+      nodes.set(gid, { id: gid, label: `${basename(moduleId)}/`, parent, type: 'group', kind: opaque.get(moduleId)!.kind, depth: 0 });
+      link(gid, parent);
+    }
+    return gid;
+  };
+  for (const [id, m] of opaque) {
+    const o = owner.get(id);
+    const parent = nesting.has(id) ? ensureOpaqueGroup(id) : o !== undefined ? ensureOpaqueGroup(o) : null;
+    let code = 0;
+    for (const f of m.files) code += filesByPath.get(f)?.code ?? 0;
+    nodes.set(id, { id, label: basename(id), parent, type: 'leaf', kind: m.kind, depth: 0, fileCount: m.files.length, code });
+    link(id, parent);
+  }
+
+  for (const m of dirModules) {
     ensureGroup(m.id, m.kind);
     for (const f of m.files) moduleOfFile.set(f, m.id);
   }
@@ -120,13 +176,14 @@ export function buildGraphModel(snap: Snapshot): GraphModel {
     link(id, parent);
   };
 
-  for (const m of modules) for (const f of m.files) ensureLeaf(f);
+  for (const m of dirModules) for (const f of m.files) ensureLeaf(f);
 
   const out: GraphEdge[] = [];
   const seen = new Set<string>();
   for (const e of edges) {
     if (e.from === e.to) continue;
     if (e.level === 'module') {
+      // Endpoints are module ids: opaque ones already exist; dir modules are groups.
       for (const id of [e.from, e.to]) if (!nodes.has(id) && !ensureGroup(id)) ensureLeaf(id);
     } else {
       ensureLeaf(e.from);
@@ -135,13 +192,13 @@ export function buildGraphModel(snap: Snapshot): GraphModel {
     const key = edgeKey(e.from, e.to);
     if (seen.has(key)) continue;
     seen.add(key);
-    out.push({ from: e.from, to: e.to, key, level: e.level });
+    out.push({ from: e.from, to: e.to, key, level: e.level === 'module' ? 'module' : 'file' });
   }
 
   // Depths, then group totals (deepest first so sums roll up).
   const depthOf = (n: GraphNode): number => (n.parent ? depthOf(nodes.get(n.parent)!) + 1 : 0);
   for (const n of nodes.values()) n.depth = depthOf(n);
-  // Groups without member nodes (e.g. a module only seen in module-level edges) draw as leaves.
+  // Groups without member nodes (e.g. a dir module only seen in module-level edges) draw as leaves.
   for (const n of nodes.values()) if (n.type === 'group' && !children.get(n.id)?.length) n.type = 'leaf';
   const byDepth = [...nodes.values()].sort((a, b) => b.depth - a.depth);
   for (const n of byDepth) {
@@ -151,8 +208,10 @@ export function buildGraphModel(snap: Snapshot): GraphModel {
     }
     if (!n.parent) continue;
     const p = nodes.get(n.parent)!;
-    p.fileCount = (p.fileCount ?? 0) + (n.type === 'group' ? n.fileCount! : n.kind === 'file' ? 1 : 0);
-    p.code = (p.code ?? 0) + (n.type === 'group' ? n.code! : (n.metrics?.code ?? 0));
+    const files = n.kind === 'file' ? 1 : (n.fileCount ?? 0);
+    const code = n.kind === 'file' ? (n.metrics?.code ?? 0) : (n.code ?? 0);
+    p.fileCount = (p.fileCount ?? 0) + files;
+    p.code = (p.code ?? 0) + code;
   }
   return { nodes, children, edges: out };
 }
@@ -198,7 +257,8 @@ export function aggregateEdges(model: GraphModel, collapsed: Set<string>, cycles
     if (from === to) continue;
     const id = edgeKey(from, to);
     let v = merged.get(id);
-    if (!v) merged.set(id, (v = { id, from, to, count: 0, cycleCount: 0 }));
+    if (!v) merged.set(id, (v = { id, from, to, count: 0, cycleCount: 0, level: e.level }));
+    else if (e.level === 'module') v.level = 'module';
     v.count++;
     if (cycles?.edgeKeys.has(e.key)) v.cycleCount++;
   }
