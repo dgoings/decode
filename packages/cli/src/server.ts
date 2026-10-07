@@ -3,16 +3,20 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import * as http from 'node:http';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { gunzipSync } from 'node:zlib';
+import { gunzipSync, gzipSync } from 'node:zlib';
 import { encodeSnapshot, type Snapshot } from '@codeviz/core';
 import { analyzeRef } from './analyze.ts';
 import { cacheDir, listSnapshots } from './cache.ts';
+import { compareRefs } from './compare.ts';
+import { resolveRef } from './refs.ts';
 import { repoId, repoName } from './repo.ts';
 
 export interface ServerOptions {
   root: string;
   since: string;
   log?: (s: string) => void;
+  /** Seed the in-memory WORKTREE snapshot (e.g. from `codeviz compare HEAD WORKTREE --open`). */
+  worktree?: Snapshot | null;
 }
 
 const MIME: Record<string, string> = {
@@ -103,9 +107,19 @@ export function createServer(opts: ServerOptions): CodevizServer {
   const id = repoId(root);
   const name = repoName(root);
   const webDir = findWebDir();
-  let worktree: Snapshot | null = null;
+  let worktree: Snapshot | null = opts.worktree ?? null;
   const inFlight = new Set<string>();
   const running = new Set<Promise<unknown>>();
+
+  /** Register work that may hold a temp worktree so `idle()` (and SIGINT shutdown) waits for it. */
+  function track<T>(job: Promise<T>): Promise<T> {
+    running.add(job);
+    job.then(
+      () => running.delete(job),
+      () => running.delete(job),
+    );
+    return job;
+  }
 
   async function handleAnalyze(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     let body: { ref?: unknown; force?: unknown };
@@ -119,19 +133,37 @@ export function createServer(opts: ServerOptions): CodevizServer {
     if (inFlight.has(ref)) return sendJson(res, 409, { error: 'in progress' });
     inFlight.add(ref);
     try {
-      const job = analyzeRef(root, ref, { since: opts.since, log, force: body.force === true });
-      running.add(job);
-      job.then(
-        () => running.delete(job),
-        () => running.delete(job),
-      );
-      const { snapshot, cached } = await job;
+      const { snapshot, cached } = await track(analyzeRef(root, ref, { since: opts.since, log, force: body.force === true }));
       if (snapshot.sha === 'WORKTREE') worktree = snapshot;
       sendJson(res, 200, { sha: snapshot.sha, ref, cached });
     } catch (err) {
       sendJson(res, 400, { error: err instanceof Error ? err.message : String(err) });
     } finally {
       inFlight.delete(ref);
+    }
+  }
+
+  async function handleCompare(req: http.IncomingMessage, res: http.ServerResponse, url: URL): Promise<void> {
+    const base = url.searchParams.get('base');
+    const head = url.searchParams.get('head');
+    if (!base || !head) return sendJson(res, 400, { error: 'base and head are required' });
+    if (base === 'WORKTREE') return sendJson(res, 400, { error: 'WORKTREE can only be the head of a comparison' });
+    try {
+      resolveRef(root, base);
+      resolveRef(root, head);
+    } catch (err) {
+      return sendJson(res, 400, { error: err instanceof Error ? err.message : String(err) });
+    }
+    try {
+      const diff = await track(
+        (async () => {
+          if (head === 'WORKTREE' && !worktree) worktree = (await analyzeRef(root, 'WORKTREE', { since: opts.since, log })).snapshot;
+          return compareRefs(root, base, head, { since: opts.since, log, worktree });
+        })(),
+      );
+      sendGzippedJson(req, res, gzipSync(JSON.stringify(diff)));
+    } catch (err) {
+      sendJson(res, 400, { error: err instanceof Error ? err.message : String(err) });
     }
   }
 
@@ -193,6 +225,7 @@ export function createServer(opts: ServerOptions): CodevizServer {
     const m = /^\/api\/snapshots\/([^/]+)$/.exec(p);
     if (m && method === 'GET') return handleSnapshot(req, res, m[1]!);
     if (p === '/api/analyze' && method === 'POST') return handleAnalyze(req, res);
+    if (p === '/api/compare' && method === 'GET') return handleCompare(req, res, url);
     if (p.startsWith('/api/')) return sendJson(res, 404, { error: 'not found' });
     if (method !== 'GET' && method !== 'HEAD') return sendJson(res, 405, { error: 'method not allowed' });
     handleStatic(res, p);

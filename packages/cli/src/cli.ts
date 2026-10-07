@@ -1,4 +1,5 @@
 import { analyzeCommand, analyzeUsage } from './commands/analyze.ts';
+import { compareCommand, compareUsage } from './commands/compare.ts';
 import { serveCommand, serveUsage } from './commands/serve.ts';
 import { version } from './version.ts';
 
@@ -6,12 +7,14 @@ const usage = `codeviz ${version}
 
 Usage:
   ${analyzeUsage}
+  ${compareUsage}
   ${serveUsage}
   codeviz help
   codeviz --version`;
 
 const commands: Record<string, (args: string[]) => Promise<number>> = {
   analyze: analyzeCommand,
+  compare: compareCommand,
   serve: serveCommand,
   help: async () => {
     console.log(usage);
