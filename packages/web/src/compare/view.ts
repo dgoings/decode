@@ -78,16 +78,17 @@ function deltaLegend(scale: ReturnType<typeof deltaScale>): HTMLElement {
     return scale.color({ status: 'modified', code: v } as FileDelta);
   });
   bar.style.background = `linear-gradient(to right, ${stops.join(', ')})`;
-  const clamp = scale.max > scale.hi ? '+' : '';
-  const hi = el('span', undefined, `+${fmt(scale.hi)}${clamp}`);
-  if (clamp) hi.title = `Clamped at the 95th percentile; largest change is ${fmt(scale.max)}`;
+  const clamped = scale.max > scale.hi;
+  const lo = el('span', undefined, `${clamped ? '≤' : ''}−${fmt(scale.hi)}`);
+  const hi = el('span', undefined, `${clamped ? '≥' : ''}+${fmt(scale.hi)}`);
+  if (clamped) lo.title = hi.title = `Clamped at the 95th percentile; largest change is ${fmt(scale.max)} lines`;
   const swatch = (cls: string, label: string) => {
     const s = el('span', `cmp-swatch ${cls}`);
     return [s, el('span', undefined, label)];
   };
   wrap.append(
     el('span', 'legend-title', 'Δ code lines'),
-    el('span', undefined, `−${fmt(scale.hi)}${clamp}`),
+    lo,
     bar,
     hi,
     ...swatch('sw-unchanged', 'unchanged'),
