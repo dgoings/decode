@@ -65,7 +65,9 @@ main { flex: 1; overflow: auto; padding: 24px; }
 .muted { color: var(--muted); }
 .error { color: var(--error); font-size: 12px; }
 
-main.has-treemap { display: flex; flex-direction: column; gap: 8px; padding: 12px 16px; overflow: hidden; }
+main.has-view { display: flex; flex-direction: column; padding: 12px 16px; overflow: hidden; }
+.view-pane { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; }
+.view-pane[hidden] { display: none; }
 .summary-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
 .summary-bar code { font-size: 12px; color: var(--muted); }
 
@@ -76,6 +78,8 @@ main.has-treemap { display: flex; flex-direction: column; gap: 8px; padding: 12p
 }
 .segmented button + button { border-left: 1px solid var(--line); }
 .segmented button[aria-pressed='true'] { background: #e3ecfb; color: var(--fg); font-weight: 500; }
+header .view-switch { margin-left: 8px; }
+header .view-switch button { font-size: 13px; padding: 3px 14px; }
 
 .legend { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
 .legend-title { color: var(--fg); }
@@ -112,3 +116,32 @@ main.has-treemap { display: flex; flex-direction: column; gap: 8px; padding: 12p
 .tm-tip dl { display: grid; grid-template-columns: max-content 1fr; gap: 2px 10px; margin: 0; }
 .tm-tip dt { color: var(--muted); }
 .tm-tip dd { margin: 0; font-variant-numeric: tabular-nums; }
+
+.btn {
+  font: inherit; font-size: 12px; padding: 3px 10px; border: 1px solid var(--line); border-radius: 4px;
+  background: var(--bg); color: var(--fg); cursor: pointer;
+}
+.btn:hover { background: #eceef2; }
+
+.graph-hint { font-size: 12px; margin-left: auto; }
+.graph-tools { display: inline-flex; gap: 6px; }
+.graph-row { flex: 1; min-height: 0; display: flex; gap: 12px; }
+.graph-stage {
+  flex: 1; min-width: 0; position: relative; overflow: hidden;
+  border: 1px solid var(--line); border-radius: 4px;
+}
+.graph-cy { position: absolute; inset: 0; }
+.graph-cy[hidden], .graph-side[hidden] { display: none; }
+.graph-empty { margin: 24px; }
+.graph-side { width: 280px; flex-shrink: 0; overflow-y: auto; font-size: 13px; }
+.graph-side h3 {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--muted); margin: 0 0 6px;
+}
+.graph-side ul { list-style: none; margin: 0; padding: 0; }
+.graph-side button {
+  display: block; width: 100%; text-align: left; font: inherit; font-size: 12px;
+  padding: 5px 8px; border: 0; border-left: 3px solid #d92d20; background: none;
+  color: var(--fg); cursor: pointer; overflow-wrap: anywhere;
+}
+.graph-side button:hover { background: #fdf0ef; }

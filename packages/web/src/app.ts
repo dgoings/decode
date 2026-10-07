@@ -5,12 +5,14 @@ import { colorScale, createLegend, createTreemap, legendLabel, type ColorMode, t
 export interface App {
   source: DataSource;
   picker: RefPicker;
-  /** Main content area: summary bar + treemap once a snapshot is loaded. */
+  /** Main content area: the active view (summary bar + treemap or graph) once a snapshot is loaded. */
   main: HTMLElement;
   index: SnapshotIndex | null;
   snapshot: Snapshot | null;
-  /** Load an analyzed sha (or WORKTREE), render the treemap, and write it to the URL hash. */
+  /** Load an analyzed sha (or WORKTREE), render the active view, and write it to the URL hash. */
   load(sha: string): Promise<void>;
+  /** Switch views without re-fetching the snapshot. */
+  setView(name: ViewName): Promise<void>;
   setStatus(text: string, kind?: 'info' | 'error' | 'busy'): void;
 }
 
@@ -39,7 +41,21 @@ export function readHashMode(): ColorMode {
   return readHashParam('mode') === 'churn' ? 'churn' : 'complexity';
 }
 
-interface TreemapView {
+export type ViewName = 'treemap' | 'graph';
+
+export function readHashView(): ViewName {
+  return readHashParam('view') === 'graph' ? 'graph' : 'treemap';
+}
+
+/** One main-area view. Created lazily; only the active one is rendered. */
+interface View {
+  el: HTMLElement;
+  /** Snapshot last rendered into this view. */
+  snap: Snapshot | null;
+  render(snap: Snapshot): void;
+}
+
+interface TreemapView extends View {
   bar: HTMLElement;
   treemap: Treemap;
   mode: ColorMode;
@@ -48,13 +64,13 @@ interface TreemapView {
 }
 
 /** Summary bar (ref, totals, tier badges, color toggle, legend) above the treemap. */
-function createTreemapView(main: HTMLElement): TreemapView {
+function createTreemapView(el: HTMLElement): TreemapView {
   const bar = document.createElement('div');
   bar.className = 'summary-bar';
   const box = document.createElement('div');
-  main.classList.add('has-treemap');
-  main.replaceChildren(bar, box);
+  el.replaceChildren(bar, box);
   const view: TreemapView = {
+    el,
     bar,
     treemap: createTreemap(box),
     mode: readHashMode(),
@@ -65,8 +81,55 @@ function createTreemapView(main: HTMLElement): TreemapView {
       view.treemap.setMode(mode);
       if (view.snap) renderSummaryBar(view, view.snap);
     },
+    render(snap) {
+      view.snap = snap;
+      renderSummaryBar(view, snap);
+      view.treemap.render(snap, view.mode);
+    },
   };
   return view;
+}
+
+/** The graph view pulls in Cytoscape, so it is loaded on first use. */
+async function createGraphPane(el: HTMLElement): Promise<View> {
+  const { createGraphView } = await import('./graph/view.ts');
+  const graph = createGraphView(el);
+  const view: View = {
+    el,
+    snap: null,
+    render(snap) {
+      view.snap = snap;
+      graph.render(snap);
+    },
+  };
+  return view;
+}
+
+function createViewSwitch(onPick: (name: ViewName) => void): { el: HTMLElement; set(name: ViewName): void } {
+  const el = document.createElement('div');
+  el.className = 'segmented view-switch';
+  el.setAttribute('role', 'group');
+  el.setAttribute('aria-label', 'View');
+  const buttons = (
+    [
+      ['treemap', 'Treemap'],
+      ['graph', 'Graph'],
+    ] as const
+  ).map(([name, label]) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = label;
+    b.dataset.view = name;
+    b.addEventListener('click', () => onPick(name));
+    el.append(b);
+    return b;
+  });
+  return {
+    el,
+    set(name) {
+      for (const b of buttons) b.setAttribute('aria-pressed', String(b.dataset.view === name));
+    },
+  };
 }
 
 function renderSummaryBar(view: TreemapView, snap: Snapshot): void {
@@ -101,7 +164,10 @@ export async function startApp(root: HTMLElement, source: DataSource): Promise<A
   title.textContent = 'codeviz';
   const status = document.createElement('div');
   status.className = 'status';
-  header.append(title, status);
+  let active: ViewName = readHashView();
+  const switcher = createViewSwitch((name) => void app.setView(name));
+  switcher.set(active);
+  header.append(title, switcher.el, status);
 
   const main = document.createElement('main');
   main.id = 'view';
@@ -112,7 +178,44 @@ export async function startApp(root: HTMLElement, source: DataSource): Promise<A
   main.append(placeholder);
 
   let loadSeq = 0;
-  let view: TreemapView | null = null;
+  let treemapView: TreemapView | null = null;
+  const views = new Map<ViewName, Promise<View>>();
+
+  function getView(name: ViewName): Promise<View> {
+    let v = views.get(name);
+    if (!v) {
+      const el = document.createElement('div');
+      el.className = 'view-pane';
+      el.dataset.pane = name;
+      if (!views.size) {
+        main.replaceChildren();
+        main.classList.add('has-view');
+      }
+      main.append(el);
+      v =
+        name === 'graph'
+          ? createGraphPane(el)
+          : Promise.resolve((treemapView = createTreemapView(el)));
+      views.set(name, v);
+    }
+    return v;
+  }
+
+  /** Show the active view, rendering it if it has not seen the current snapshot. */
+  async function showActive(): Promise<void> {
+    const snap = app.snapshot;
+    if (!snap) return;
+    const name = active;
+    const view = await getView(name);
+    if (name !== active) return;
+    for (const pane of main.querySelectorAll<HTMLElement>('.view-pane')) pane.hidden = pane !== view.el;
+    if (view.snap !== snap) {
+      const t = performance.now();
+      view.render(snap);
+      main.dataset.renderMs = (performance.now() - t).toFixed(0);
+    }
+  }
+
   const app: App = {
     source,
     main,
@@ -123,6 +226,17 @@ export async function startApp(root: HTMLElement, source: DataSource): Promise<A
       onSelect: (sha) => app.load(sha),
       onIndex: (index) => (app.index = index),
     }),
+    async setView(name) {
+      if (name === active) return;
+      active = name;
+      switcher.set(name);
+      writeHashParam('view', name);
+      try {
+        await showActive();
+      } catch (err) {
+        app.setStatus(`Could not show the ${name} view: ${(err as Error).message}`, 'error');
+      }
+    },
     setStatus(text, kind = 'info') {
       status.textContent = text;
       status.dataset.kind = kind;
@@ -136,10 +250,7 @@ export async function startApp(root: HTMLElement, source: DataSource): Promise<A
         app.snapshot = snap;
         app.picker.setSelected(sha);
         writeHashSha(sha);
-        view ??= createTreemapView(main);
-        view.snap = snap;
-        renderSummaryBar(view, snap);
-        view.treemap.render(snap, view.mode);
+        await showActive();
         app.setStatus(`${snap.ref || sha.slice(0, 7)} · ${source.kind}`);
       } catch (err) {
         if (seq !== loadSeq) return;
@@ -185,7 +296,8 @@ export async function startApp(root: HTMLElement, source: DataSource): Promise<A
     const sha = readHashSha();
     if (sha && sha !== app.snapshot?.sha && app.index && isAnalyzed(app.index, sha)) void app.load(sha);
     const mode = readHashMode();
-    if (view && mode !== view.mode) view.setMode(mode);
+    if (treemapView && mode !== treemapView.mode) treemapView.setMode(mode);
+    void app.setView(readHashView());
   });
   return app;
 }
