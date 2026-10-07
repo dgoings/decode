@@ -16,9 +16,6 @@ import {
 
 cytoscape.use(fcose);
 
-/** Above this many visible nodes the initial/full layout uses faster settings. */
-const LARGE_GRAPH_NODES = 250;
-
 export interface GraphView {
   readonly el: HTMLElement;
   render(snap: Snapshot): void;
@@ -168,15 +165,12 @@ export function createGraphView(container: HTMLElement): GraphView {
   function runLayout(eles: Core, fixed: NodeSingular[] = []): number {
     const t = performance.now();
     const incremental = fixed.length > 0;
-    // Big graphs get fcose's faster draft quality with fewer iterations.
-    const large = eles.nodes().length > LARGE_GRAPH_NODES;
     eles
       .layout({
         name: 'fcose',
         animate: false,
         randomize: !incremental,
-        quality: incremental ? 'proof' : large ? 'draft' : 'default',
-        ...(large ? { numIter: 1000 } : {}),
+        quality: incremental ? 'proof' : 'default',
         nodeDimensionsIncludeLabels: true,
         idealEdgeLength: 70,
         nodeRepulsion: 6500,
