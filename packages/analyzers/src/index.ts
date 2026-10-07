@@ -1,1 +1,2 @@
-export const name = '@codeviz/analyzers';
+export * from './registry.ts';
+export * from './history.ts';
