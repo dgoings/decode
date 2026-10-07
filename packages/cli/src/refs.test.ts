@@ -48,7 +48,7 @@ test('tag is detached, checkout shows old tree and is cleaned up even on reject'
     }),
   ).rejects.toThrow('boom');
   expect(fs.existsSync(dir2)).toBe(false);
-  expect(git('worktree', 'list', '--porcelain')).not.toContain('codeviz-');
+  expect(git('worktree', 'list', '--porcelain').match(/^worktree /gm)).toHaveLength(1);
 });
 
 test('head and worktree use root', async () => {
