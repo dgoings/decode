@@ -5,6 +5,7 @@ import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { builtinModules, createRequire } from 'node:module';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { Resolution, Resolver } from './resolver.ts';
+import { createBaselineTsResolver } from './ts-baseline.ts';
 
 export interface FoundTypescript { modulePath: string; version: string; source: 'checkout' | 'head-reuse' }
 
@@ -80,6 +81,9 @@ export function createPreciseTsResolver(root: string, ts: { modulePath: string }
   const absRoot = resolve(root);
   const realRoot = realpathSync(absRoot);
   const tracked = new Set(files);
+  // Clean checkouts (other refs, dirty HEAD) have no node_modules workspace symlinks,
+  // so tsc cannot see sibling packages; the baseline's workspace map covers that.
+  let baseline: Resolver | undefined;
 
   const makeProject = (options: TS.CompilerOptions, fileNames: string[]): Project => ({
     options,
@@ -146,15 +150,31 @@ export function createPreciseTsResolver(root: string, ts: { modulePath: string }
         // A bare specifier tsc cannot type (e.g. an untyped JS package) is still an
         // external package, unless it looks like a path alias that failed to map.
         const bare = !specifier.startsWith('.') && !specifier.startsWith('/') && !specifier.startsWith('#');
+        if (bare) {
+          baseline ??= createBaselineTsResolver(root, files);
+          const b = baseline.resolve(fromFile, specifier);
+          if (b.kind === 'file') return b;
+        }
         return bare && !matchesPathAlias(specifier, proj.options.paths)
           ? { kind: 'external', name: packageNameFromSpecifier(specifier) }
           : { kind: 'unresolved' };
       }
       const file = mod.resolvedFileName;
-      if (mod.isExternalLibraryImport || /[\\/]node_modules[\\/]/.test(file)) {
+      // Workspace packages resolve through a node_modules symlink (and TS flags them
+      // as external libraries). Follow the link: a real path inside the repo with no
+      // node_modules segment is an in-repo file; anything else is a real package.
+      let real = file;
+      try {
+        real = realpathSync(file);
+      } catch {
+        // keep the unresolved-link path
+      }
+      const realRel = toRepoPath(real);
+      const inRepo = realRel !== null && !realRel.split('/').includes('node_modules');
+      if (!inRepo && (mod.isExternalLibraryImport || /[\\/]node_modules[\\/]/.test(file))) {
         return { kind: 'external', name: untyped(mod.packageId?.name ?? packageNameFromPath(file)) };
       }
-      const rel = toRepoPath(file);
+      const rel = inRepo ? realRel : toRepoPath(file);
       if (!rel) return { kind: 'unresolved' };
       if (rel.endsWith('.d.ts')) {
         const base = rel.slice(0, -'.d.ts'.length);

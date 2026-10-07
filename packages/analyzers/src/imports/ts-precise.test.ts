@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -39,6 +39,42 @@ test('precise resolver: paths/baseUrl, relative, .js suffix, external, builtin',
   expect(r.resolve('src/main.ts', 'react')).toEqual({ kind: 'external', name: 'react' });
   expect(r.resolve('src/main.ts', 'node:fs')).toEqual({ kind: 'external', name: 'node:fs' });
   expect(r.resolve('src/main.ts', './missing')).toEqual({ kind: 'unresolved' });
+});
+
+test('precise resolver: workspace symlink in node_modules resolves to the in-repo file', () => {
+  const modulePath = dirname(createRequire(import.meta.url).resolve('typescript/package.json'));
+  const files = {
+    'tsconfig.json': JSON.stringify({ compilerOptions: { module: 'ESNext', moduleResolution: 'Bundler' }, include: ['packages'] }),
+    'package.json': JSON.stringify({ name: 'root', workspaces: ['packages/*'] }),
+    'packages/core/package.json': JSON.stringify({ name: '@x/core', main: 'src/index.ts' }),
+    'packages/core/src/index.ts': 'export const core = 1;',
+    'packages/core/src/util.ts': 'export const util = 1;',
+    'packages/cli/src/a.ts': '',
+    'node_modules/left-pad/package.json': JSON.stringify({ name: 'left-pad', version: '1.0.0', main: 'index.js' }),
+    'node_modules/left-pad/index.js': 'module.exports = 1;',
+  };
+  const root = fixture(files);
+  mkdirSync(join(root, 'node_modules/@x'), { recursive: true });
+  symlinkSync('../../packages/core', join(root, 'node_modules/@x/core'));
+  const tracked = Object.keys(files).filter((f) => !f.startsWith('node_modules/'));
+  const r = createPreciseTsResolver(root, { modulePath }, tracked);
+  expect(r.resolve('packages/cli/src/a.ts', '@x/core')).toEqual({ kind: 'file', path: 'packages/core/src/index.ts' });
+  expect(r.resolve('packages/cli/src/a.ts', '@x/core/src/util.js')).toEqual({ kind: 'file', path: 'packages/core/src/util.ts' });
+  expect(r.resolve('packages/cli/src/a.ts', 'left-pad')).toEqual({ kind: 'external', name: 'left-pad' });
+});
+
+test('precise resolver: workspace package without node_modules link (clean checkout)', () => {
+  const modulePath = dirname(createRequire(import.meta.url).resolve('typescript/package.json'));
+  const files = {
+    'tsconfig.json': JSON.stringify({ compilerOptions: { module: 'ESNext', moduleResolution: 'Bundler' }, include: ['packages'] }),
+    'package.json': JSON.stringify({ name: 'root', workspaces: ['packages/*'] }),
+    'packages/core/package.json': JSON.stringify({ name: '@x/core', main: 'src/index.ts' }),
+    'packages/core/src/index.ts': 'export const core = 1;',
+    'packages/cli/src/a.ts': '',
+  };
+  const r = createPreciseTsResolver(fixture(files), { modulePath }, Object.keys(files));
+  expect(r.resolve('packages/cli/src/a.ts', '@x/core')).toEqual({ kind: 'file', path: 'packages/core/src/index.ts' });
+  expect(r.resolve('packages/cli/src/a.ts', 'react')).toEqual({ kind: 'external', name: 'react' });
 });
 
 test('findTypescript: head-reuse only when majors match', () => {

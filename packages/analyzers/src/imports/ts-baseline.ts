@@ -1,6 +1,7 @@
 // Baseline TS/JS resolver: Node-only, no compiler. Probes the tracked file set for
 // relative specifiers, honors tsconfig `paths`/`baseUrl` (nearest tsconfig.json,
-// following `extends`), and maps bare specifiers to their package name.
+// following `extends`), maps root package.json workspace packages to their in-repo
+// files, and maps other bare specifiers to their package name.
 import { existsSync, readFileSync } from 'node:fs';
 import { join, posix } from 'node:path';
 import type { Resolution, Resolver } from './resolver.ts';
@@ -159,6 +160,27 @@ export function createBaselineTsResolver(root: string, files: string[]): Resolve
     return cands.find((c) => fileSet.has(c));
   };
 
+  const workspaces = workspacePackages(root, files);
+  /** Entry file of a workspace package: exports['.'], module, main, then index conventions. */
+  const workspaceEntry = (dir: string): string | undefined => {
+    const pkg = readJsonAt(join(root, dir, 'package.json')) ?? {};
+    const cands: unknown[] = [];
+    const exp = pkg.exports as unknown;
+    const dot = exp && typeof exp === 'object' && '.' in exp ? (exp as Record<string, unknown>)['.'] : exp;
+    if (typeof dot === 'string') cands.push(dot);
+    else if (dot && typeof dot === 'object') {
+      const c = dot as Record<string, unknown>;
+      cands.push(c.import, c.default, c.types);
+    }
+    cands.push(pkg.module, pkg.main);
+    for (const c of cands) {
+      if (typeof c !== 'string') continue;
+      const found = probe(posix.join(dir, c));
+      if (found) return found;
+    }
+    return ['index.ts', 'src/index.ts', 'src/index.tsx'].map((f) => posix.join(dir, f)).find((f) => fileSet.has(f));
+  };
+
   const file = (path: string | undefined): Resolution =>
     path ? { kind: 'file', path } : { kind: 'unresolved' };
 
@@ -188,10 +210,49 @@ export function createBaselineTsResolver(root: string, files: string[]): Resolve
         const found = probe(posix.join(cfg.baseUrl, spec));
         if (found) return file(found);
       }
+      // Order: relative, tsconfig paths, baseUrl, then workspace packages, then external.
       const name = packageName(spec);
+      if (name && workspaces.has(name)) {
+        const dir = workspaces.get(name)!;
+        const found = spec === name ? workspaceEntry(dir) : probe(posix.join(dir, spec.slice(name.length + 1)));
+        if (found) return file(found);
+      }
       return name ? { kind: 'external', name } : { kind: 'unresolved' };
     },
   };
+}
+
+function readJsonAt(path: string): Record<string, unknown> | undefined {
+  try {
+    const v = JSON.parse(readFileSync(path, 'utf8'));
+    return v && typeof v === 'object' ? v : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Workspace package name -> repo-relative dir, from the root package.json
+ * `workspaces` (array or `{ packages }`). Globs: exact dirs and a trailing `/*`.
+ */
+function workspacePackages(root: string, files: string[]): Map<string, string> {
+  const out = new Map<string, string>();
+  const ws = readJsonAt(join(root, 'package.json'))?.workspaces as unknown;
+  const globs = Array.isArray(ws) ? ws : (ws as { packages?: unknown } | undefined)?.packages;
+  if (!Array.isArray(globs)) return out;
+  const manifests = files.filter((f) => posix.basename(f) === 'package.json' && f !== 'package.json');
+  for (const g of globs) {
+    if (typeof g !== 'string') continue;
+    const pat = posix.normalize(g.replace(/^\.\//, '')).replace(/\/$/, '');
+    for (const m of manifests) {
+      const dir = posix.dirname(m);
+      const ok = pat.endsWith('/*') ? posix.dirname(dir) === pat.slice(0, -2) : dir === pat;
+      if (!ok) continue;
+      const name = readJsonAt(join(root, m))?.name;
+      if (typeof name === 'string' && !out.has(name)) out.set(name, dir);
+    }
+  }
+  return out;
 }
 
 /** TS `paths` matching: exact key wins, else the wildcard key with the longest prefix. */
