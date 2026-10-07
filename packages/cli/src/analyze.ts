@@ -50,7 +50,7 @@ export async function analyzeRef(
     };
     const { snapshot: adapterSnapshot, warnings } = await runAdapters(
       dir,
-      { ref: resolved, since: opts.since, log },
+      { ref: resolved, since: opts.since, log, headRoot: root },
       meta,
     );
     for (const w of warnings) log(`warning: ${w}`);

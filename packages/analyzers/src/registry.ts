@@ -10,6 +10,8 @@ export interface AnalyzeContext {
   ref: ResolvedRefLike;
   since: string;
   log: (msg: string) => void;
+  /** The user's real checkout (has node_modules); differs from `root` for detached refs. */
+  headRoot?: string;
 }
 
 export interface Adapter {
