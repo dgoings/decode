@@ -4,6 +4,7 @@ import { createRequire } from 'node:module';
 import { dirname, extname, join } from 'node:path';
 import Parser from 'web-tree-sitter';
 import type { FileEntry, FunctionEntry, Snapshot } from '@codeviz/core';
+import type { RawImport } from '../imports/resolver.ts';
 import type { LanguageConfig } from './config.ts';
 
 const MAX_BYTES = 1024 * 1024;
@@ -11,6 +12,8 @@ const MAX_BYTES = 1024 * 1024;
 let initPromise: Promise<void> | undefined;
 const languageCache = new Map<string, Promise<Parser.Language>>();
 let parser: Parser | undefined;
+const queryCache = new Map<string, Parser.Query>();
+const IMPORT_KINDS = new Set<RawImport['kind']>(['import', 'export', 'dynamic', 'require']);
 
 function wasmPath(file: string): string {
   const req = createRequire(import.meta.url);
@@ -26,6 +29,31 @@ export function loadLanguage(config: LanguageConfig): Promise<Parser.Language> {
     languageCache.set(config.wasm, lang);
   }
   return lang;
+}
+
+/** Run the config's import query over an already-parsed tree. */
+function importsFromTree(
+  tree: Parser.Tree,
+  relPath: string,
+  config: LanguageConfig,
+  language: Parser.Language,
+): RawImport[] {
+  if (!config.importQuery) return [];
+  const key = `${config.wasm}\0${config.importQuery}`;
+  let query = queryCache.get(key);
+  if (!query) queryCache.set(key, (query = language.query(config.importQuery)));
+  const capName = config.importCaptures?.specifier ?? 'spec';
+  const out: RawImport[] = [];
+  // `setProperties` (from #set!) exists at runtime but is missing from the 0.24 typings.
+  for (const m of query.matches(tree.rootNode) as Array<Parser.QueryMatch & { setProperties?: Record<string, string | null> }>) {
+    const cap = m.captures.find((c) => c.name === capName);
+    if (!cap) continue;
+    const specifier = cap.node.text.replace(/^(['"`])([\s\S]*)\1$/, '$2');
+    const tagged = m.setProperties?.kind as RawImport['kind'] | undefined;
+    const kind = tagged && IMPORT_KINDS.has(tagged) ? tagged : 'import';
+    out.push({ file: relPath, specifier, line: cap.node.startPosition.row + 1, kind });
+  }
+  return out;
 }
 
 function splitLines(src: string): string[] {
@@ -50,7 +78,8 @@ function analyzeSource(
   relPath: string,
   config: LanguageConfig,
   language: Parser.Language,
-): { file: FileEntry; functions: FunctionEntry[] } {
+  withImports = false,
+): { file: FileEntry; functions: FunctionEntry[]; imports?: RawImport[] } {
   parser ??= new Parser();
   parser.setLanguage(language);
   const tree = parser.parse(src);
@@ -113,7 +142,12 @@ function analyzeSource(
     cursor.gotoParent();
   };
   visit(null, 0);
-  tree.delete();
+  let imports: RawImport[] | undefined;
+  try {
+    if (withImports) imports = importsFromTree(tree, relPath, config, language);
+  } finally {
+    tree.delete();
+  }
 
   // Size: blank lines, lines touched by a comment, and comment-only lines.
   const lines = splitLines(src);
@@ -155,7 +189,7 @@ function analyzeSource(
       functions: functions.length,
     },
   };
-  return { file, functions };
+  return imports ? { file, functions, imports } : { file, functions };
 }
 
 /**
@@ -166,7 +200,8 @@ export async function analyzeFile(
   absPath: string,
   relPath: string,
   config: LanguageConfig,
-): Promise<{ file: FileEntry; functions: FunctionEntry[] }> {
+  opts: { imports?: boolean } = {},
+): Promise<{ file: FileEntry; functions: FunctionEntry[]; imports?: RawImport[] }> {
   let buf: Buffer;
   try {
     buf = readFileSync(absPath);
@@ -176,9 +211,32 @@ export async function analyzeFile(
   if (buf.subarray(0, 8000).includes(0)) return { file: locOnly(relPath, config, buf), functions: [] };
   const src = buf.toString('utf8');
   try {
-    return analyzeSource(src, relPath, config, await loadLanguage(config));
+    return analyzeSource(src, relPath, config, await loadLanguage(config), opts.imports);
   } catch {
     return { file: locOnly(relPath, config, src), functions: [] };
+  }
+}
+
+/** Extract raw imports from one file with the config's import query ([] when it has none). */
+export async function extractImports(absPath: string, relPath: string, config: LanguageConfig): Promise<RawImport[]> {
+  if (!config.importQuery) return [];
+  let src: string;
+  try {
+    const buf = readFileSync(absPath);
+    if (buf.subarray(0, 8000).includes(0)) return [];
+    src = buf.toString('utf8');
+  } catch {
+    return [];
+  }
+  const language = await loadLanguage(config);
+  parser ??= new Parser();
+  parser.setLanguage(language);
+  const tree = parser.parse(src);
+  if (!tree) return [];
+  try {
+    return importsFromTree(tree, relPath, config, language);
+  } finally {
+    tree.delete();
   }
 }
 
@@ -193,13 +251,15 @@ export async function walkRepo(
   root: string,
   configs: LanguageConfig[],
   files: string[],
-): Promise<Partial<Snapshot>> {
+  opts: { imports?: boolean } = {},
+): Promise<Partial<Snapshot> & { imports?: RawImport[] }> {
   const byExt = new Map<string, LanguageConfig>();
   for (const c of configs) for (const ext of c.extensions) byExt.set(ext, c);
 
   const outFiles: FileEntry[] = [];
   const outFunctions: FunctionEntry[] = [];
   const languages: Snapshot['languages'] = {};
+  const imports: RawImport[] = [];
 
   for (const rel of files) {
     const config = byExt.get(extname(rel).toLowerCase());
@@ -211,10 +271,12 @@ export async function walkRepo(
     } catch {
       continue;
     }
-    const { file, functions } = await analyzeFile(abs, rel, config);
-    outFiles.push(file);
-    for (const f of functions) outFunctions.push(f);
+    const res = await analyzeFile(abs, rel, config, opts);
+    outFiles.push(res.file);
+    for (const f of res.functions) outFunctions.push(f);
+    if (res.imports) for (const i of res.imports) imports.push(i);
     languages[config.id] = 'baseline';
   }
-  return { languages, files: outFiles, functions: outFunctions };
+  const result = { languages, files: outFiles, functions: outFunctions };
+  return opts.imports ? { ...result, imports } : result;
 }

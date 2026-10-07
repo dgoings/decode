@@ -24,4 +24,12 @@ export interface LanguageConfig {
   logicalOperators?: string[];
   /** Node types (e.g. else_clause) whose direct child branch stays at the parent's depth (else-if). */
   elseNodes?: string[];
+  /**
+   * Tree-sitter S-expression query that finds import specifiers. Each match must
+   * capture the specifier's string literal under `importCaptures.specifier`; a
+   * `(#set! kind "import"|"export"|"dynamic"|"require")` predicate tags the match
+   * (default "import").
+   */
+  importQuery?: string;
+  importCaptures?: { specifier: string };
 }
