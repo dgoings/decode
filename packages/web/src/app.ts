@@ -1,4 +1,5 @@
-import { isAnalyzed, type DataSource, type Snapshot, type SnapshotIndex } from './data.ts';
+import type { CompareView } from './compare/view.ts';
+import { isAnalyzed, WORKTREE, type DataSource, type Snapshot, type SnapshotIndex } from './data.ts';
 import { createRefPicker, tierBadges, type RefPicker } from './refpicker.ts';
 import { colorScale, createLegend, createTreemap, legendLabel, type ColorMode, type Treemap } from './treemap.ts';
 
@@ -41,10 +42,11 @@ export function readHashMode(): ColorMode {
   return readHashParam('mode') === 'churn' ? 'churn' : 'complexity';
 }
 
-export type ViewName = 'treemap' | 'graph';
+export type ViewName = 'treemap' | 'graph' | 'compare';
 
 export function readHashView(): ViewName {
-  return readHashParam('view') === 'graph' ? 'graph' : 'treemap';
+  const v = readHashParam('view');
+  return v === 'graph' || v === 'compare' ? v : 'treemap';
 }
 
 /** One main-area view. Created lazily; only the active one is rendered. */
@@ -114,6 +116,7 @@ function createViewSwitch(onPick: (name: ViewName) => void): { el: HTMLElement; 
     [
       ['treemap', 'Treemap'],
       ['graph', 'Graph'],
+      ['compare', 'Compare'],
     ] as const
   ).map(([name, label]) => {
     const b = document.createElement('button');
@@ -180,35 +183,65 @@ export async function startApp(root: HTMLElement, source: DataSource): Promise<A
   let loadSeq = 0;
   let treemapView: TreemapView | null = null;
   const views = new Map<ViewName, Promise<View>>();
+  let compare: Promise<CompareView> | null = null;
 
-  function getView(name: ViewName): Promise<View> {
+  function newPane(name: ViewName): HTMLElement {
+    const el = document.createElement('div');
+    el.className = 'view-pane';
+    el.dataset.pane = name;
+    if (!main.classList.contains('has-view')) {
+      main.replaceChildren();
+      main.classList.add('has-view');
+    }
+    main.append(el);
+    return el;
+  }
+
+  function getView(name: Exclude<ViewName, 'compare'>): Promise<View> {
     let v = views.get(name);
     if (!v) {
-      const el = document.createElement('div');
-      el.className = 'view-pane';
-      el.dataset.pane = name;
-      if (!views.size) {
-        main.replaceChildren();
-        main.classList.add('has-view');
-      }
-      main.append(el);
-      v =
-        name === 'graph'
-          ? createGraphPane(el)
-          : Promise.resolve((treemapView = createTreemapView(el)));
+      const el = newPane(name);
+      v = name === 'graph' ? createGraphPane(el) : Promise.resolve((treemapView = createTreemapView(el)));
       views.set(name, v);
     }
     return v;
   }
 
+  /** The compare view (and Cytoscape) loads on first use. It does not depend on the current snapshot. */
+  function getCompare(): Promise<CompareView> {
+    compare ??= import('./compare/view.ts').then(({ createCompareView }) => {
+      const view = createCompareView(newPane('compare'), {
+        source,
+        snapshot: (sha) =>
+          sha !== WORKTREE && app.snapshot?.sha === sha ? Promise.resolve(app.snapshot) : source.snapshot(sha),
+        readParam: readHashParam,
+        writeParam: writeHashParam,
+      });
+      if (app.index) view.setIndex(app.index);
+      return view;
+    });
+    return compare;
+  }
+
+  function showPane(el: HTMLElement): void {
+    for (const pane of main.querySelectorAll<HTMLElement>('.view-pane')) pane.hidden = pane !== el;
+  }
+
   /** Show the active view, rendering it if it has not seen the current snapshot. */
   async function showActive(): Promise<void> {
+    const name = active;
+    if (name === 'compare') {
+      const view = await getCompare();
+      if (name !== active) return;
+      showPane(view.el);
+      view.show();
+      return;
+    }
     const snap = app.snapshot;
     if (!snap) return;
-    const name = active;
     const view = await getView(name);
     if (name !== active) return;
-    for (const pane of main.querySelectorAll<HTMLElement>('.view-pane')) pane.hidden = pane !== view.el;
+    showPane(view.el);
     if (view.snap !== snap) {
       const t = performance.now();
       view.render(snap);
@@ -224,7 +257,10 @@ export async function startApp(root: HTMLElement, source: DataSource): Promise<A
     picker: createRefPicker({
       source,
       onSelect: (sha) => app.load(sha),
-      onIndex: (index) => (app.index = index),
+      onIndex: (index) => {
+        app.index = index;
+        void compare?.then((c) => c.setIndex(index));
+      },
     }),
     async setView(name) {
       if (name === active) return;
@@ -290,14 +326,18 @@ export async function startApp(root: HTMLElement, source: DataSource): Promise<A
   if (fromHash && initial !== fromHash) {
     app.setStatus(`${fromHash.slice(0, 7)} from the URL is not analyzed`, 'error');
   }
+  const first = active === 'compare' ? showActive() : null;
   if (initial) await app.load(initial);
+  await first?.catch((err: Error) => app.setStatus(`Could not show the compare view: ${err.message}`, 'error'));
 
   window.addEventListener('hashchange', () => {
     const sha = readHashSha();
     if (sha && sha !== app.snapshot?.sha && app.index && isAnalyzed(app.index, sha)) void app.load(sha);
     const mode = readHashMode();
     if (treemapView && mode !== treemapView.mode) treemapView.setMode(mode);
-    void app.setView(readHashView());
+    const view = readHashView();
+    if (view === 'compare' && active === 'compare') void showActive();
+    else void app.setView(view);
   });
   return app;
 }

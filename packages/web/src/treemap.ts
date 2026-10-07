@@ -119,7 +119,16 @@ export function createLegend(scale: ColorScale, label: string): HTMLElement {
 export interface Treemap {
   render(snap: Snapshot, mode: ColorMode): void;
   setMode(mode: ColorMode): void;
+  /** Zoom to the file's directory and outline it. */
+  reveal(path: string): void;
   destroy(): void;
+}
+
+/** Overrides the metric coloring (used by the compare view's delta treemap). */
+export interface TreemapStyle {
+  fill(f: FileEntry): string;
+  className?(f: FileEntry): string | undefined;
+  tipRows?(f: FileEntry): Array<[string, string]>;
 }
 
 const SVG = 'http://www.w3.org/2000/svg';
@@ -150,8 +159,9 @@ const fmt = (n: number) => n.toLocaleString();
 
 export function createTreemap(
   container: HTMLElement,
-  opts: { onFileClick?(path: string): void } = {},
+  opts: { onFileClick?(path: string): void; style?: TreemapStyle } = {},
 ): Treemap {
+  const style = opts.style;
   container.classList.add('treemap');
   const crumbs = document.createElement('nav');
   crumbs.className = 'tm-crumbs';
@@ -170,6 +180,7 @@ export function createTreemap(
   let dirIndex = new Map<string, TreeNode>();
   let parentOf = new Map<TreeNode, TreeNode>();
   let focus = '';
+  let selected: string | null = null;
   let nodes: HierarchyRectangularNode<TreeNode>[] = [];
 
   function index(t: TreeNode): void {
@@ -227,7 +238,7 @@ export function createTreemap(
     drawCrumbs(focusNode);
     tip.hidden = true;
 
-    const scale = colorScale(snap.files, mode);
+    const scale = style ? null : colorScale(snap.files, mode);
     const h = hierarchy(focusNode)
       .sum((d) => d.value ?? 0)
       .sort((a, b) => (b.value ?? 0) - (a.value ?? 0));
@@ -265,8 +276,10 @@ export function createTreemap(
         }
         frag.append(g);
       } else {
-        const fill = scale.color(metric(n.data.file!, mode));
-        frag.append(svg('rect', { class: 'tm-file', 'data-i': i, x: n.x0, y: n.y0, width: w, height: ht, fill }));
+        const file = n.data.file!;
+        const fill = style ? style.fill(file) : scale!.color(metric(file, mode));
+        const cls = ['tm-file', style?.className?.(file), file.path === selected ? 'tm-selected' : undefined];
+        frag.append(svg('rect', { class: cls.filter(Boolean).join(' '), 'data-i': i, x: n.x0, y: n.y0, width: w, height: ht, fill }));
         const label = ht >= 14 ? fit(n.data.name, w) : null;
         if (label) {
           const t = svg('text', { class: 'tm-label', x: n.x0 + 3, y: n.y0 + 11, fill: inkFor(fill) });
@@ -291,7 +304,9 @@ export function createTreemap(
   function showTip(n: HierarchyRectangularNode<TreeNode>, e: PointerEvent): void {
     const rows: Array<[string, string]> = [];
     const f = n.data.file;
-    if (f) {
+    if (f && style?.tipRows) {
+      rows.push(...style.tipRows(f));
+    } else if (f) {
       rows.push(['Lines', `${f.loc ?? 'n/a'} loc / ${f.code ?? 'n/a'} code / ${f.comments ?? 'n/a'} comments`]);
       rows.push(['Complexity', f.complexity ? `${f.complexity.sum} sum / ${f.complexity.max} max / ${f.complexity.functions} functions` : 'n/a']);
       rows.push(['Churn', f.churn ? `${f.churn.commits} commits / ${f.churn.authors} authors` : 'n/a']);
@@ -362,6 +377,11 @@ export function createTreemap(
     setMode(nextMode) {
       if (nextMode === mode) return;
       mode = nextMode;
+      draw();
+    },
+    reveal(path) {
+      selected = path;
+      focus = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '';
       draw();
     },
     destroy() {

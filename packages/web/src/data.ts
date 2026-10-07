@@ -1,6 +1,6 @@
-import type { LanguageTier, Snapshot } from '@codeviz/core';
+import type { LanguageTier, Snapshot, SnapshotDiff } from '@codeviz/core';
 
-export type { LanguageTier, Snapshot };
+export type { LanguageTier, Snapshot, SnapshotDiff };
 
 /** Sentinel "sha" for the uncommitted working tree. */
 export const WORKTREE = 'WORKTREE';
@@ -34,6 +34,8 @@ export interface DataSource {
   index(): Promise<SnapshotIndex>;
   snapshot(sha: string): Promise<Snapshot>;
   analyze?(ref: string): Promise<{ sha: string }>;
+  /** Diff two refs; blocks until both are analyzed. `head` may be WORKTREE. */
+  compare?(base: string, head: string): Promise<SnapshotDiff>;
 }
 
 async function getJson<T>(url: string, init?: RequestInit): Promise<T> {
@@ -79,6 +81,11 @@ export class ApiDataSource implements DataSource {
       body: JSON.stringify({ ref }),
     });
   }
+
+  compare(base: string, head: string): Promise<SnapshotDiff> {
+    const q = new URLSearchParams({ base, head });
+    return getJson(`${this.base}/compare?${q}`);
+  }
 }
 
 export class StaticDataSource implements DataSource {
@@ -91,6 +98,10 @@ export class StaticDataSource implements DataSource {
 
   snapshot(sha: string): Promise<Snapshot> {
     return getJson(`${this.base}/${encodeURIComponent(sha)}.json`);
+  }
+
+  compare(_base: string, _head: string): Promise<SnapshotDiff> {
+    return Promise.reject(new Error('compare is not available in static exports'));
   }
 }
 
