@@ -3,9 +3,13 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "workspaces": ["packages/*"],
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
-    "build": "bun build packages/cli/src/cli.ts --target=node --outfile dist/cli.js --external web-tree-sitter --external tree-sitter-wasms",
+    "build:web": "bun run --cwd packages/web build",
+    "build:cli": "bun build packages/cli/src/cli.ts --target=node --outfile dist/cli.js --external web-tree-sitter --external tree-sitter-wasms",
+    "build": "bun run build:web && bun run build:cli && bun scripts/copy-web.ts",
     "test": "bun test",
     "check": "bun scripts/check-runtime-imports.ts"
   },
