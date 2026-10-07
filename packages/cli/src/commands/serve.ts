@@ -1,0 +1,119 @@
+import { execFileSync, spawn } from 'node:child_process';
+import type * as http from 'node:http';
+import { DEFAULT_SINCE, parseSince } from '@codeviz/analyzers';
+import { analyzeRef } from '../analyze.ts';
+import { listSnapshots } from '../cache.ts';
+import { repoId, repoName } from '../repo.ts';
+import { createServer, HOST } from '../server.ts';
+
+export const serveUsage = 'codeviz serve [--port <n>] [--since <90d|6m|1y|YYYY-MM-DD>] [--open] [--no-analyze]';
+
+function listen(server: http.Server, port: number): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const onError = (err: Error) => {
+      server.off('listening', onListening);
+      reject(err);
+    };
+    const onListening = () => {
+      server.off('error', onError);
+      const addr = server.address();
+      resolve(typeof addr === 'object' && addr ? addr.port : port);
+    };
+    server.once('error', onError);
+    server.once('listening', onListening);
+    server.listen(port, HOST);
+  });
+}
+
+function openBrowser(url: string): void {
+  const [cmd, args] =
+    process.platform === 'darwin'
+      ? ['open', [url]]
+      : process.platform === 'win32'
+        ? ['cmd', ['/c', 'start', '', url]]
+        : ['xdg-open', [url]];
+  try {
+    const child = spawn(cmd, args, { detached: true, stdio: 'ignore' });
+    child.on('error', () => {});
+    child.unref();
+  } catch {
+    // ignore: opening a browser is best effort
+  }
+}
+
+export async function serveCommand(args: string[]): Promise<number> {
+  let port = 4173;
+  let since = DEFAULT_SINCE;
+  let open = false;
+  let analyze = true;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!;
+    if (a === '--open') open = true;
+    else if (a === '--no-analyze') analyze = false;
+    else if (a === '--port' || a.startsWith('--port=')) {
+      const v = a === '--port' ? args[++i] : a.slice('--port='.length);
+      port = Number(v);
+      if (!v || !Number.isInteger(port) || port < 0 || port > 65535) return fail(`invalid --port ${v ?? ''}`);
+    } else if (a === '--since') {
+      const v = args[++i];
+      if (!v) return fail('--since needs a value');
+      since = v;
+    } else if (a.startsWith('--since=')) since = a.slice('--since='.length);
+    else return fail(`unknown argument ${a}\nusage: ${serveUsage}`, 2);
+  }
+  try {
+    parseSince(since);
+  } catch (err) {
+    return fail((err as Error).message);
+  }
+
+  let root: string;
+  try {
+    root = execFileSync('git', ['rev-parse', '--show-toplevel'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch {
+    return fail('not inside a git repository');
+  }
+
+  const log = (s: string) => console.error(s);
+  if (analyze) {
+    try {
+      const t0 = Date.now();
+      const { cached } = await analyzeRef(root, 'HEAD', { since, log });
+      log(`analyzed HEAD ${cached ? '(cached)' : `in ${Date.now() - t0}ms`}`);
+    } catch (err) {
+      log(`warning: could not analyze HEAD: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  const server = createServer({ root, since, log });
+  let bound: number | undefined;
+  for (let attempt = 0; attempt < 10 && bound === undefined; attempt++) {
+    try {
+      bound = await listen(server, port === 0 ? 0 : port + attempt);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EADDRINUSE') return fail((err as Error).message);
+    }
+  }
+  if (bound === undefined) return fail(`no free port in ${port}-${port + 9}`);
+
+  const url = `http://${HOST}:${bound}`;
+  console.log(`codeviz serve: ${url}  (repo ${repoName(root)}, ${listSnapshots(repoId(root)).length} snapshots cached)`);
+  if (open) openBrowser(url);
+
+  return new Promise<number>((resolve) => {
+    process.once('SIGINT', () => {
+      server.close();
+      server.closeAllConnections?.();
+      resolve(0);
+      process.exit(0);
+    });
+  });
+}
+
+function fail(msg: string, code = 1): number {
+  console.error(`codeviz serve: ${msg}`);
+  return code;
+}

@@ -23,18 +23,32 @@ export function writeSnapshot(snapshot: Snapshot): void {
   writeFileSync(join(dir, `${snapshot.sha}.json.gz`), encodeSnapshot(snapshot));
 }
 
-export function listSnapshots(repoId: string): { sha: string; ref: string; analyzedAt: string; toolVersion: string }[] {
+export interface SnapshotSummary {
+  sha: string;
+  ref: string;
+  analyzedAt: string;
+  toolVersion: string;
+  languages: Snapshot['languages'];
+}
+
+export function listSnapshots(repoId: string): SnapshotSummary[] {
   let names: string[];
   try {
     names = readdirSync(cacheDir(repoId)).filter((n) => n.endsWith('.json.gz'));
   } catch {
     return [];
   }
-  const out = [];
+  const out: SnapshotSummary[] = [];
   for (const n of names) {
     try {
       const meta = decodeSnapshot(readFileSync(join(cacheDir(repoId), n)));
-      out.push({ sha: meta.sha, ref: meta.ref, analyzedAt: meta.analyzedAt, toolVersion: meta.toolVersion });
+      out.push({
+        sha: meta.sha,
+        ref: meta.ref,
+        analyzedAt: meta.analyzedAt,
+        toolVersion: meta.toolVersion,
+        languages: meta.languages,
+      });
     } catch {
       // skip corrupt files
     }

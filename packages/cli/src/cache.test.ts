@@ -31,5 +31,5 @@ test('cache read/write/list and toolVersion mismatch', () => {
   writeSnapshot(mergeSnapshots(meta, [{ files: [{ path: 'a.ts', loc: 1 }] }]));
   expect(readSnapshot(id, 'abc', '1.0.0')?.files[0]?.path).toBe('a.ts');
   expect(readSnapshot(id, 'abc', '2.0.0')).toBeNull();
-  expect(listSnapshots(id)).toEqual([{ sha: 'abc', ref: 'main', analyzedAt: 't', toolVersion: '1.0.0' }]);
+  expect(listSnapshots(id)).toEqual([{ sha: 'abc', ref: 'main', analyzedAt: 't', toolVersion: '1.0.0', languages: {} }]);
 });
