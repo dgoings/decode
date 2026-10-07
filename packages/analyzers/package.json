@@ -5,6 +5,8 @@
   "type": "module",
   "main": "src/index.ts",
   "dependencies": {
-    "@codeviz/core": "workspace:*"
+    "@codeviz/core": "workspace:*",
+    "tree-sitter-wasms": "0.1.13",
+    "web-tree-sitter": "0.24.7"
   }
 }
