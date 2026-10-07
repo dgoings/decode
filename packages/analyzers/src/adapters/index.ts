@@ -1,10 +1,11 @@
 import { listAdapters, registerAdapter, type Adapter } from '../registry.ts';
 import { tsAdapter } from './ts.ts';
 import { goAdapter } from './go.ts';
+import { textAdapter } from './text.ts';
 
-export { tsAdapter, goAdapter };
+export { tsAdapter, goAdapter, textAdapter };
 
-export const builtinAdapters: Adapter[] = [tsAdapter, goAdapter];
+export const builtinAdapters: Adapter[] = [tsAdapter, goAdapter, textAdapter];
 
 /** Register the built-in adapters once; safe to call repeatedly. */
 export function registerBuiltinAdapters(): void {

@@ -56,7 +56,7 @@ function importsFromTree(
   return out;
 }
 
-function splitLines(src: string): string[] {
+export function splitLines(src: string): string[] {
   if (src === '') return [];
   const lines = src.split('\n');
   if (lines[lines.length - 1] === '') lines.pop();
