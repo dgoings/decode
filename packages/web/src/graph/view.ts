@@ -8,7 +8,6 @@ import {
   buildGraphModel,
   cyclePath,
   findCycles,
-  groupsBelow,
   isOpaqueKind,
   type Cycles,
   type GraphModel,
@@ -404,8 +403,8 @@ export function createGraphView(container: HTMLElement): GraphView {
       snap = next;
       model = buildGraphModel(next);
       cycles = findCycles(model);
-      // Direct children of the repo root expanded, everything deeper collapsed.
-      collapsed = groupsBelow(model, 1);
+      // Start fully expanded: every directory open, every file visible.
+      collapsed = new Set();
       cy.elements().remove();
       visible = null; // so the summary never shows the previous snapshot's counts
       tip.hidden = true;
