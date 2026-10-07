@@ -34,6 +34,13 @@ export interface CompareView {
 }
 
 const MAX_ROWS = 200;
+type Panel = 'treemap' | 'edges' | 'changes';
+const PANELS: Array<[Panel, string]> = [
+  ['treemap', 'Treemap'],
+  ['edges', 'Edges'],
+  ['changes', 'Changes'],
+];
+const readPanel = (v: string | null): Panel => (v === 'edges' || v === 'changes' ? v : 'treemap');
 const UNCHANGED_FILL = '#d5d8dd';
 const ADDED_EDGE = '#15803d';
 const REMOVED_EDGE = '#d92d20';
@@ -161,9 +168,20 @@ export function createCompareView(root: HTMLElement, deps: CompareDeps): Compare
   tableWrap.append(table);
   tablePanel.append(tableHead, tableWrap);
 
-  const lower = el('div', 'cmp-lower');
-  lower.append(edgePanel, tablePanel);
-  body.append(tmPanel, lower);
+  // One panel at a time, picked by the segmented control under the toolbar (hash `panel=`).
+  const panelSwitch = el('div', 'segmented cmp-panel-switch');
+  panelSwitch.setAttribute('role', 'group');
+  panelSwitch.setAttribute('aria-label', 'Panel');
+  const panelEls: Record<Panel, HTMLElement> = { treemap: tmPanel, edges: edgePanel, changes: tablePanel };
+  const panelButtons = PANELS.map(([name, label]) => {
+    const b = el('button', undefined, label);
+    b.type = 'button';
+    b.dataset.panel = name;
+    b.addEventListener('click', () => setPanel(name));
+    panelSwitch.append(b);
+    return b;
+  });
+  body.append(panelSwitch, tmPanel, edgePanel, tablePanel);
   root.replaceChildren(summary, toolbar.el, empty, body);
 
   let index: SnapshotIndex | null = null;
@@ -179,6 +197,10 @@ export function createCompareView(root: HTMLElement, deps: CompareDeps): Compare
   let graphModel: GraphModel | null = null;
   let currentScale: ReturnType<typeof deltaScale> | null = null;
   let changedEdges: Array<{ from: string; to: string; kind: string }> = [];
+  let panel: Panel = readPanel(deps.readParam('panel'));
+  /** Graph laid out while hidden (or resized since): fit it the next time Edges is shown. */
+  let graphNeedsFit = false;
+  let graphSize = '';
 
   const filterButtons = (
     [
@@ -261,7 +283,7 @@ export function createCompareView(root: HTMLElement, deps: CompareDeps): Compare
   }
   /** Color changed edges through the graph view's Cytoscape instance (graph/ has no kind hook). */
   function hookEdgeStyling(): void {
-    const cy = (graphBox.querySelector('.graph-cy') as (HTMLElement & { _cyreg?: { cy?: Core } }) | null)?._cyreg?.cy;
+    const cy = graphCy();
     if (!cy) {
       graphBox.dataset.edgeStyling = 'none';
       return;
@@ -307,7 +329,42 @@ export function createCompareView(root: HTMLElement, deps: CompareDeps): Compare
       hookEdgeStyling();
     }
     graph.render(snap);
+    graphNeedsFit = true;
+    if (panel === 'edges') refitGraph();
   }
+
+  function graphCy(): Core | undefined {
+    return (graphBox.querySelector('.graph-cy') as (HTMLElement & { _cyreg?: { cy?: Core } }) | null)?._cyreg?.cy;
+  }
+
+  /** Cytoscape cannot size itself while display:none; resize and re-fit once its box is visible. */
+  function refitGraph(): void {
+    const cy = graphCy();
+    if (!cy || graphBox.hidden) return;
+    const { width, height } = graphBox.getBoundingClientRect();
+    if (width < 10 || height < 10) return;
+    const size = `${Math.round(width)}x${Math.round(height)}`;
+    cy.resize();
+    if (graphNeedsFit || size !== graphSize) cy.fit(undefined, 30);
+    graphNeedsFit = false;
+    graphSize = size;
+  }
+
+  function applyPanel(): void {
+    for (const b of panelButtons) b.setAttribute('aria-pressed', String(b.dataset.panel === panel));
+    for (const [name, p] of Object.entries(panelEls)) p.hidden = name !== panel;
+    root.dataset.panel = panel;
+    // The treemap redraws from its own ResizeObserver (0x0 -> visible); the graph needs an explicit fit.
+    if (panel === 'edges') refitGraph();
+  }
+
+  function setPanel(next: Panel): void {
+    deps.writeParam('panel', next);
+    if (next === panel) return;
+    panel = next;
+    applyPanel();
+  }
+  applyPanel();
 
   function renderTable(): void {
     if (!state) return;
@@ -351,8 +408,8 @@ export function createCompareView(root: HTMLElement, deps: CompareDeps): Compare
     selected = path;
     for (const r of tbody.querySelectorAll<HTMLElement>('tr')) r.classList.toggle('selected', r.dataset.path === path);
     if (fromTable) {
+      setPanel('treemap');
       treemap?.reveal(path);
-      tmPanel.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
     } else {
       tbody.querySelector<HTMLElement>(`tr[data-path="${CSS.escape(path)}"]`)?.scrollIntoView({ block: 'nearest' });
     }
@@ -403,6 +460,11 @@ export function createCompareView(root: HTMLElement, deps: CompareDeps): Compare
   }
 
   function show(): void {
+    const nextPanel = readPanel(deps.readParam('panel'));
+    if (nextPanel !== panel) {
+      panel = nextPanel;
+      applyPanel();
+    }
     const base = deps.readParam('base');
     const head = deps.readParam('head');
     toolbar.setValue(base, head);
