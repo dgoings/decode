@@ -107,3 +107,31 @@ describe('baseline TS resolver', () => {
     ]);
   });
 });
+
+describe('baseline TS resolver: workspace packages', () => {
+  const ws: Record<string, string> = {
+    'package.json': JSON.stringify({ name: 'root', workspaces: ['packages/*'] }),
+    'packages/core/package.json': JSON.stringify({ name: '@x/core', main: 'src/index.ts' }),
+    'packages/core/src/index.ts': 'export const core = 1;\n',
+    'packages/core/src/util.ts': 'export const util = 1;\n',
+    'packages/web/package.json': JSON.stringify({ name: '@x/web', exports: { '.': { import: './dist/index.js' } } }),
+    'packages/web/dist/index.ts': 'export const web = 1;\n',
+    'packages/cli/package.json': JSON.stringify({ name: '@x/cli' }),
+    'packages/cli/src/a.ts': "import { core } from '@x/core';\nimport { util } from '@x/core/src/util.js';\n",
+  };
+  const root = mkdtempSync(join(tmpdir(), 'codeviz-ws-'));
+  for (const [rel, src] of Object.entries(ws)) {
+    mkdirSync(dirname(join(root, rel)), { recursive: true });
+    writeFileSync(join(root, rel), src);
+  }
+  const resolver = createBaselineTsResolver(root, Object.keys(ws));
+  const r = (spec: string) => resolver.resolve('packages/cli/src/a.ts', spec);
+
+  test('resolves workspace names and subpaths to in-repo files', () => {
+    expect(r('@x/core')).toEqual({ kind: 'file', path: 'packages/core/src/index.ts' });
+    expect(r('@x/core/src/util.js')).toEqual({ kind: 'file', path: 'packages/core/src/util.ts' });
+    expect(r('@x/web')).toEqual({ kind: 'file', path: 'packages/web/dist/index.ts' });
+    expect(r('@x/core/missing')).toEqual({ kind: 'external', name: '@x/core' });
+    expect(r('react')).toEqual({ kind: 'external', name: 'react' });
+  });
+});
