@@ -12,10 +12,17 @@
     "packages/analyzers": {
       "name": "@codeviz/analyzers",
       "version": "0.0.0",
+      "dependencies": {
+        "@codeviz/core": "workspace:*",
+      },
     },
     "packages/cli": {
       "name": "@codeviz/cli",
       "version": "0.0.0",
+      "dependencies": {
+        "@codeviz/analyzers": "workspace:*",
+        "@codeviz/core": "workspace:*",
+      },
     },
     "packages/core": {
       "name": "@codeviz/core",
