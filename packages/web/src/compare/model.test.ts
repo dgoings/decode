@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test';
 import type { FileDelta, SnapshotDiff } from '@codeviz/core';
-import { changedRows, compareDeltas, deltaFiles } from './model.ts';
+import { deltaFiles, sliceFor } from './model.ts';
 
 const d = (path: string, status: FileDelta['status'], code: number, extra: Partial<FileDelta> = {}): FileDelta => ({
   path,
@@ -59,20 +59,18 @@ test('deltaFiles keeps head sizes, adds removed files at base size, and filters 
   ]);
 });
 
-test('table sort: |code| desc by default, numeric columns by absolute delta, ties by path', () => {
-  expect(changedRows(diff).map((r) => r.path)).toEqual(['src/gone.ts', 'src/added.ts', 'src/a.ts', 'src/new.ts']);
-  const rows = changedRows(diff);
-  expect(rows.sort(compareDeltas({ key: 'complexitySum', desc: true })).map((r) => r.path)).toEqual([
-    'src/a.ts',
-    'src/new.ts',
-    'src/added.ts',
-    'src/gone.ts',
-  ]);
-  expect(rows.sort(compareDeltas({ key: 'code', desc: false }))[0]!.path).toBe('src/new.ts');
-  expect(rows.sort(compareDeltas({ key: 'status', desc: false })).map((r) => r.status)).toEqual([
-    'added',
-    'modified',
-    'removed',
-    'renamed',
-  ]);
+test('sliceFor: net growth over head code, shrink over base code, full width for added/removed', () => {
+  const f = (code: number) => ({ path: 'x.ts', code });
+  expect(sliceFor(d('x.ts', 'modified', 6, { head: { path: 'x.ts', code: 10 } }), f(10))).toEqual({ kind: 'grow', frac: 0.6 });
+  expect(sliceFor(d('x.ts', 'modified', -5, { base: { path: 'x.ts', code: 20 } }), f(15))).toEqual({ kind: 'shrink', frac: 0.25 });
+  // Without base/head entries the sizes fall back to the drawn file (+ the delta for base).
+  expect(sliceFor(d('x.ts', 'modified', -5), f(15))).toEqual({ kind: 'shrink', frac: 0.25 });
+  expect(sliceFor(d('x.ts', 'added', 12), f(12))).toEqual({ kind: 'added', frac: 1 });
+  expect(sliceFor(d('x.ts', 'removed', -30), f(30))).toEqual({ kind: 'removed', frac: 1 });
+  expect(sliceFor(d('x.ts', 'renamed', 0, { oldPath: 'y.ts' }), f(8))).toBeNull();
+  expect(sliceFor(d('x.ts', 'modified', 0, { complexitySum: 3 }), f(8))).toBeNull();
+  expect(sliceFor(d('x.ts', 'unchanged', 0), f(8))).toBeNull();
+  expect(sliceFor(undefined, f(8))).toBeNull();
+  // Zero sizes are guarded (full width rather than Infinity/NaN).
+  expect(sliceFor(d('x.ts', 'modified', 3, { head: { path: 'x.ts', code: 0 } }), f(0))).toEqual({ kind: 'grow', frac: 1 });
 });
