@@ -197,3 +197,15 @@ test('buildCompareGraphModel marks added edges, adds removed ones with ghost end
   // The ordinary model carries no change info.
   expect(aggregateEdges(buildGraphModel(snap), new Set(['src/a', 'lib'])).edges.every((x) => x.change === undefined)).toBe(true);
 });
+
+test('findCycles ignores removed (base-only) edges', () => {
+  // Head: lib/u -> lib/v. Base also had lib/v -> lib/u, which would close a cycle.
+  const head = { ...snap, edges: [e('lib/u.ts', 'lib/v.ts')] } as unknown as Snapshot;
+  const diff = { edges: { added: [], removed: [e('lib/v.ts', 'lib/u.ts')] } } as unknown as SnapshotDiff;
+  const m = buildCompareGraphModel(head, diff);
+  expect(m.edges.find((x) => x.key === edgeKey('lib/v.ts', 'lib/u.ts'))?.change).toBe('removed');
+  const c = findCycles(m);
+  expect(c.components).toEqual([]);
+  expect(c.edgeKeys.size).toBe(0);
+  expect(aggregateEdges(m, new Set(), c).edges.every((x) => x.cycleCount === 0)).toBe(true);
+});

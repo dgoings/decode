@@ -223,10 +223,12 @@ export function createGraphView(container: HTMLElement): GraphView {
     };
   }
 
-  function runLayout(eles: Core, fixed: NodeSingular[] = []): number {
+  /** Lay out the shown elements only (fcose throws on display:none nodes hidden by Changed only). */
+  function runLayout(fixed: NodeSingular[] = []): number {
     const t = performance.now();
     const incremental = fixed.length > 0;
-    eles
+    cy.elements()
+      .not('.unchanged-hidden')
       .layout({
         name: 'fcose',
         animate: false,
@@ -293,9 +295,12 @@ export function createGraphView(container: HTMLElement): GraphView {
     });
     if (incremental && added.length) {
       const fresh = new Set(added.map((d) => d.data.id!));
-      const pinned = cy.nodes().filter((n) => n.isChildless() && !fresh.has(n.id()) && before.has(n.id()));
-      runLayout(cy, pinned.toArray() as NodeSingular[]);
+      const pinned = cy
+        .nodes()
+        .filter((n) => !n.hasClass('unchanged-hidden') && n.isChildless() && !fresh.has(n.id()) && before.has(n.id()));
+      runLayout(pinned.toArray() as NodeSingular[]);
     }
+    syncEmpty();
     if (counts) counts.textContent = summaryText();
     if (toggleAll) toggleAll.textContent = collapsed.size > 0 ? 'Expand all' : 'Collapse all';
   }
@@ -311,6 +316,22 @@ export function createGraphView(container: HTMLElement): GraphView {
     cy.nodes().not(keep).addClass('unchanged-hidden');
   }
 
+  /** Changed only with no changed edge on screen: show the empty message instead of a blank canvas. */
+  function syncEmpty(): void {
+    if (!model?.edges.length) return;
+    const none = changedOnly && cy.edges('[change]').empty();
+    if (none) {
+      const anyChange = model.edges.some((e) => e.change);
+      empty.textContent = anyChange
+        ? 'No changed edges between the shown nodes; expand groups to see them.'
+        : 'No dependency edges changed.';
+    }
+    const wasHidden = cyBox.hidden;
+    empty.hidden = !none;
+    cyBox.hidden = none;
+    if (wasHidden && !none) cy.resize();
+  }
+
   /** Fit to the shown elements; compound bounds only settle on the next frame after a display change. */
   function fitVisible(): void {
     requestAnimationFrame(() => {
@@ -322,8 +343,8 @@ export function createGraphView(container: HTMLElement): GraphView {
   function summaryText(): string {
     if (!model) return '';
     const level = model.edges.some((e) => e.level === 'module') ? 'dependency' : 'import';
-    const shown = visible ? visible.edges.length : 0;
-    return `${fmt(visible ? visible.nodes.length : 0)} nodes shown · ${fmt(model.edges.length)} ${level} edges (${fmt(shown)} shown) · ${cycles.components.length} cycle${cycles.components.length === 1 ? '' : 's'}`;
+    const shown = cy.edges().not('.unchanged-hidden').length;
+    return `${fmt(cy.nodes().not('.unchanged-hidden').length)} nodes shown · ${fmt(model.edges.length)} ${level} edges (${fmt(shown)} shown) · ${cycles.components.length} cycle${cycles.components.length === 1 ? '' : 's'}`;
   }
 
   function toggle(id: string): void {
@@ -333,6 +354,7 @@ export function createGraphView(container: HTMLElement): GraphView {
     else collapsed.add(id);
     tip.hidden = true;
     update();
+    if (changedOnly) fitVisible();
   }
 
   function focusCycle(members: string[]): void {
@@ -342,7 +364,7 @@ export function createGraphView(container: HTMLElement): GraphView {
     if (changed) {
       // Several groups may open at once; a full layout reads better than pinning everything.
       update(false);
-      runLayout(cy);
+      runLayout();
     }
     cy.elements().unselect();
     const set = new Set(members);
@@ -411,17 +433,17 @@ export function createGraphView(container: HTMLElement): GraphView {
       collapsed = collapsed.size > 0 ? new Set() : groupsBelow(model, 1);
       tip.hidden = true;
       update(false);
-      runLayout(cy);
-      cy.fit(undefined, 30);
+      runLayout();
+      fitVisible();
     });
     toggleAll.textContent = collapsed.size > 0 ? 'Expand all' : 'Collapse all';
     const tools = document.createElement('span');
     tools.className = 'graph-tools';
     tools.append(
-      btn('Fit', () => cy.fit(undefined, 30)),
+      btn('Fit', () => fitVisible()),
       btn('Re-layout', () => {
-        runLayout(cy);
-        cy.fit(undefined, 30);
+        runLayout();
+        fitVisible();
       }),
       toggleAll,
     );
@@ -526,8 +548,8 @@ export function createGraphView(container: HTMLElement): GraphView {
       }
       cy.resize();
       update(false);
-      const ms = runLayout(cy);
-      cy.fit(undefined, 30);
+      const ms = runLayout();
+      fitVisible();
       container.dataset.layoutMs = ms.toFixed(0);
       renderSide();
     },
@@ -536,6 +558,8 @@ export function createGraphView(container: HTMLElement): GraphView {
       changedOnly = on;
       tip.hidden = true;
       cy.batch(applyChangedOnly);
+      syncEmpty();
+      if (counts) counts.textContent = summaryText();
       fitVisible();
     },
     resize(fit) {

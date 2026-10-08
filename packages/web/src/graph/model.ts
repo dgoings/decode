@@ -327,10 +327,17 @@ export function aggregateEdges(model: GraphModel, collapsed: Set<string>, cycles
   return { nodes, edges: [...merged.values()], repOf };
 }
 
-/** Tarjan's SCC over the model edges (iterative, so deep import chains cannot overflow the stack). */
+/** Edges that exist in the snapshot being drawn: compare-mode `removed` edges are base-only. */
+const liveEdges = (model: GraphModel): GraphEdge[] => model.edges.filter((e) => e.change !== 'removed');
+
+/**
+ * Tarjan's SCC over the model edges (iterative, so deep import chains cannot overflow the stack).
+ * Removed (base-only) edges are ignored, so cycles are always the head snapshot's own.
+ */
 export function findCycles(model: GraphModel): Cycles {
+  const edges = liveEdges(model);
   const adj = new Map<string, string[]>();
-  for (const e of model.edges) {
+  for (const e of edges) {
     const list = adj.get(e.from);
     if (list) list.push(e.to);
     else adj.set(e.from, [e.to]);
@@ -343,7 +350,7 @@ export function findCycles(model: GraphModel): Cycles {
   let next = 0;
 
   const vertices = new Set<string>();
-  for (const e of model.edges) vertices.add(e.from).add(e.to);
+  for (const e of edges) vertices.add(e.from).add(e.to);
 
   for (const start of vertices) {
     if (index.has(start)) continue;
@@ -388,7 +395,7 @@ export function findCycles(model: GraphModel): Cycles {
   const compOf = new Map<string, number>();
   components.forEach((c, i) => c.forEach((v) => compOf.set(v, i)));
   const edgeKeys = new Set<string>();
-  for (const e of model.edges) {
+  for (const e of edges) {
     const c = compOf.get(e.from);
     if (c !== undefined && c === compOf.get(e.to)) edgeKeys.add(e.key);
   }
@@ -402,7 +409,7 @@ export function cyclePath(model: GraphModel, component: string[]): string[] {
   const prev = new Map<string, string>();
   const queue = [start];
   const adj = new Map<string, string[]>();
-  for (const e of model.edges) {
+  for (const e of liveEdges(model)) {
     if (members.has(e.from) && members.has(e.to)) (adj.get(e.from) ?? adj.set(e.from, []).get(e.from)!).push(e.to);
   }
   for (let i = 0; i < queue.length; i++) {
