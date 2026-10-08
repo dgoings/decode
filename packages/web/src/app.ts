@@ -1,5 +1,7 @@
 import type { CompareView } from './compare/view.ts';
 import { isAnalyzed, WORKTREE, type DataSource, type Snapshot, type SnapshotIndex } from './data.ts';
+import { createHiddenStore, filterDiff, filterSnapshot, type HiddenStore } from './hidden.ts';
+import { createHiddenUI, type HiddenUI } from './hiddenui.ts';
 import { createRefPicker, tierBadges, type RefPicker } from './refpicker.ts';
 import { colorScale, createLegend, createTreemap, legendLabel, type ColorMode, type Treemap } from './treemap.ts';
 
@@ -9,6 +11,7 @@ export interface App {
   /** Main content area: the active view (summary bar + treemap or graph) once a snapshot is loaded. */
   main: HTMLElement;
   index: SnapshotIndex | null;
+  /** Raw snapshot as fetched; views get a copy filtered by the hidden-files set. */
   snapshot: Snapshot | null;
   /** Load an analyzed sha (or WORKTREE), render the active view, and write it to the URL hash. */
   load(sha: string): Promise<void>;
@@ -65,8 +68,13 @@ interface TreemapView extends View {
   setMode(mode: ColorMode): void;
 }
 
+interface ViewHooks {
+  onFileContextMenu(path: string, ev: MouseEvent): void;
+  barExtra(): Node;
+}
+
 /** Summary bar (ref, totals, tier badges, color toggle, legend) above the treemap. */
-function createTreemapView(el: HTMLElement): TreemapView {
+function createTreemapView(el: HTMLElement, hooks: ViewHooks): TreemapView {
   const bar = document.createElement('div');
   bar.className = 'summary-bar';
   const box = document.createElement('div');
@@ -74,18 +82,18 @@ function createTreemapView(el: HTMLElement): TreemapView {
   const view: TreemapView = {
     el,
     bar,
-    treemap: createTreemap(box),
+    treemap: createTreemap(box, { onFileContextMenu: hooks.onFileContextMenu }),
     mode: readHashMode(),
     snap: null,
     setMode(mode) {
       view.mode = mode;
       writeHashParam('mode', mode);
       view.treemap.setMode(mode);
-      if (view.snap) renderSummaryBar(view, view.snap);
+      if (view.snap) renderSummaryBar(view, view.snap, hooks);
     },
     render(snap) {
       view.snap = snap;
-      renderSummaryBar(view, snap);
+      renderSummaryBar(view, snap, hooks);
       view.treemap.render(snap, view.mode);
     },
   };
@@ -93,9 +101,9 @@ function createTreemapView(el: HTMLElement): TreemapView {
 }
 
 /** The graph view pulls in Cytoscape, so it is loaded on first use. */
-async function createGraphPane(el: HTMLElement): Promise<View> {
+async function createGraphPane(el: HTMLElement, hooks: ViewHooks): Promise<View> {
   const { createGraphView } = await import('./graph/view.ts');
-  const graph = createGraphView(el);
+  const graph = createGraphView(el, { onNodeContextMenu: hooks.onFileContextMenu, barExtra: hooks.barExtra });
   const view: View = {
     el,
     snap: null,
@@ -135,7 +143,7 @@ function createViewSwitch(onPick: (name: ViewName) => void): { el: HTMLElement; 
   };
 }
 
-function renderSummaryBar(view: TreemapView, snap: Snapshot): void {
+function renderSummaryBar(view: TreemapView, snap: Snapshot, hooks: ViewHooks): void {
   const code = snap.files.reduce((n, f) => n + (f.code ?? 0), 0);
   const ref = document.createElement('strong');
   ref.textContent = snap.ref || snap.sha.slice(0, 7);
@@ -158,7 +166,7 @@ function renderSummaryBar(view: TreemapView, snap: Snapshot): void {
     toggle.append(b);
   }
   const legend = createLegend(colorScale(snap.files, view.mode), legendLabel(view.mode, snap));
-  view.bar.replaceChildren(ref, sha, totals, tierBadges(snap.languages), toggle, legend);
+  view.bar.replaceChildren(ref, sha, totals, hooks.barExtra(), tierBadges(snap.languages), toggle, legend);
 }
 
 export async function startApp(root: HTMLElement, source: DataSource): Promise<App> {
@@ -185,6 +193,25 @@ export async function startApp(root: HTMLElement, source: DataSource): Promise<A
   const views = new Map<ViewName, Promise<View>>();
   let compare: Promise<CompareView> | null = null;
 
+  // Hidden files, per repo (set up once the index names the repo, before any view is created).
+  let store!: HiddenStore;
+  let ui!: HiddenUI;
+  let hiddenSet = new Set<string>();
+  let hiddenVersion = 0;
+  const hooks: ViewHooks = {
+    onFileContextMenu: (path, ev) => ui.openMenu(path, ev.clientX, ev.clientY),
+    barExtra: () => ui.chip(),
+  };
+  /** Filtered copy of a snapshot, cached so an unchanged hidden set keeps the same object (no re-render). */
+  const filteredCache = new WeakMap<Snapshot, { version: number; snap: Snapshot }>();
+  function filtered(snap: Snapshot): Snapshot {
+    const hit = filteredCache.get(snap);
+    if (hit?.version === hiddenVersion) return hit.snap;
+    const out = filterSnapshot(snap, hiddenSet);
+    filteredCache.set(snap, { version: hiddenVersion, snap: out });
+    return out;
+  }
+
   function newPane(name: ViewName): HTMLElement {
     const el = document.createElement('div');
     el.className = 'view-pane';
@@ -201,7 +228,7 @@ export async function startApp(root: HTMLElement, source: DataSource): Promise<A
     let v = views.get(name);
     if (!v) {
       const el = newPane(name);
-      v = name === 'graph' ? createGraphPane(el) : Promise.resolve((treemapView = createTreemapView(el)));
+      v = name === 'graph' ? createGraphPane(el, hooks) : Promise.resolve((treemapView = createTreemapView(el, hooks)));
       views.set(name, v);
     }
     return v;
@@ -216,6 +243,9 @@ export async function startApp(root: HTMLElement, source: DataSource): Promise<A
           sha !== WORKTREE && app.snapshot?.sha === sha ? Promise.resolve(app.snapshot) : source.snapshot(sha),
         readParam: readHashParam,
         writeParam: writeHashParam,
+        filter: (diff, head) => ({ diff: filterDiff(diff, hiddenSet), head: filtered(head) }),
+        onFileContextMenu: hooks.onFileContextMenu,
+        barExtra: hooks.barExtra,
       });
       if (app.index) view.setIndex(app.index);
       return view;
@@ -237,8 +267,8 @@ export async function startApp(root: HTMLElement, source: DataSource): Promise<A
       view.show();
       return;
     }
-    const snap = app.snapshot;
-    if (!snap) return;
+    if (!app.snapshot) return;
+    const snap = filtered(app.snapshot);
     const view = await getView(name);
     if (name !== active) return;
     showPane(view.el);
@@ -314,6 +344,16 @@ export async function startApp(root: HTMLElement, source: DataSource): Promise<A
   title.textContent = `codeviz · ${app.index.repo}`;
   document.title = `codeviz · ${app.index.repo}`;
   app.picker.setIndex(app.index);
+  store = createHiddenStore(app.index.repoId);
+  ui = createHiddenUI(store);
+  hiddenSet = new Set(store.list());
+  store.onChange(() => {
+    hiddenSet = new Set(store.list());
+    hiddenVersion++;
+    // Re-render from the raw data already held; inactive views catch up when shown.
+    void compare?.then((c) => c.refresh());
+    showActive().catch((err: Error) => app.setStatus(`Could not re-render: ${err.message}`, 'error'));
+  });
   app.setStatus(`${app.index.snapshots.length} snapshot(s) · ${source.kind}`);
 
   const fromHash = readHashSha();
