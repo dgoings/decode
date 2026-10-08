@@ -173,11 +173,12 @@ header .view-switch button { font-size: 13px; padding: 3px 14px; }
 .tm-file.tm-selected { stroke: var(--accent); stroke-width: 3; stroke-dasharray: none; }
 
 .cmp-graph { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 6px; }
-.cmp-graph .graph-side, .cmp-graph .badges { display: none; }
+.cmp-graph .badges { display: none; }
 .cmp-edge-key { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); }
-.cmp-edge-key span { width: 18px; height: 0; border-top: 2.5px solid; margin-left: 4px; }
-.ek-added { border-color: #15803d !important; }
-.ek-removed { border-color: #d92d20 !important; border-top-style: dashed !important; }
+.cmp-edge-key span { width: 18px; height: 3px; margin-left: 4px; }
+.ek-added { background: #1f883d; }
+.ek-removed { background: repeating-linear-gradient(to right, #cf222e 0 5px, transparent 5px 8px); }
+.ek-mixed { background: repeating-linear-gradient(to right, #1f883d 0 5px, #cf222e 5px 8px); }
 
 .cmp-table-wrap { flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--line); border-radius: 4px; }
 .cmp-table table { width: 100%; border-collapse: collapse; font-size: 12px; }

@@ -8,7 +8,7 @@
 //     group exists only for real nesting: when module `a` and module `a/b` both exist, both
 //     leaves sit in a compound `a/`;
 //  3. both at once: the dir tree and the package nodes coexist, and each edge keeps its level.
-import type { FileEntry, Snapshot } from '@codeviz/core';
+import type { FileEntry, Snapshot, SnapshotDiff } from '@codeviz/core';
 
 export interface NodeMetrics {
   code?: number;
@@ -35,13 +35,19 @@ export interface GraphNode {
   /** Groups: files underneath and their summed code lines. Opaque module leaves: their own files. */
   fileCount?: number;
   code?: number;
+  /** Compare mode: the node exists only in the base snapshot (endpoint of a removed edge). */
+  ghost?: boolean;
 }
+
+/** Compare mode: how a model edge differs between base and head (absent = unchanged). */
+export type EdgeChange = 'added' | 'removed';
 
 export interface GraphEdge {
   from: string;
   to: string;
   key: string;
   level: 'file' | 'module';
+  change?: EdgeChange;
 }
 
 export interface GraphModel {
@@ -62,6 +68,11 @@ export interface VisibleEdge {
   cycleCount: number;
   /** 'module' if any merged model edge is module-level, else 'file'. */
   level: 'file' | 'module';
+  /** Compare mode: merged edges that were added / removed. */
+  added: number;
+  removed: number;
+  /** Derived from added/removed; undefined when nothing underneath changed. */
+  change?: EdgeChange | 'mixed';
 }
 
 export interface VisibleGraph {
@@ -216,6 +227,52 @@ export function buildGraphModel(snap: Snapshot): GraphModel {
   return { nodes, children, edges: out };
 }
 
+/**
+ * Head's graph with the diff's edge changes marked: head edges in `diff.edges.added` become
+ * `added`; `diff.edges.removed` edges are added as `removed` (unless head still has an edge between
+ * the same endpoints). Removed-edge endpoints missing from head become ghost leaves under their
+ * directory group (created, also as a ghost, if head no longer has it).
+ */
+export function buildCompareGraphModel(head: Snapshot, diff: SnapshotDiff): GraphModel {
+  const model = buildGraphModel(head);
+  const { nodes, children } = model;
+  const added = new Set(diff.edges.added.map((e) => edgeKey(e.from, e.to)));
+  for (const e of model.edges) if (added.has(e.key)) e.change = 'added';
+
+  const link = (id: string, parent: string | null) => {
+    const k = parent ?? '';
+    (children.get(k) ?? children.set(k, []).get(k)!).push(id);
+  };
+  const ensureGhostGroup = (id: string): string | null => {
+    if (!id || id === ROOT_MODULE) return null;
+    const n = nodes.get(id);
+    if (n) return n.type === 'group' ? id : null;
+    const parent = ensureGhostGroup(dirname(id));
+    nodes.set(id, { id, label: basename(id), parent, type: 'group', kind: 'dir', depth: 0, ghost: true, fileCount: 0, code: 0 });
+    link(id, parent);
+    return id;
+  };
+  const ensureGhost = (id: string, level: 'file' | 'module'): void => {
+    if (nodes.has(id)) return;
+    const parent = level === 'file' ? ensureGhostGroup(dirname(id)) : null;
+    nodes.set(id, { id, label: basename(id), parent, type: 'leaf', kind: level === 'file' ? 'file' : 'module', depth: 0, ghost: true });
+    link(id, parent);
+  };
+
+  const have = new Set(model.edges.map((e) => e.key));
+  for (const e of diff.edges.removed) {
+    const key = edgeKey(e.from, e.to);
+    if (e.from === e.to || have.has(key)) continue;
+    have.add(key);
+    ensureGhost(e.from, e.level);
+    ensureGhost(e.to, e.level);
+    model.edges.push({ from: e.from, to: e.to, key, level: e.level, change: 'removed' });
+  }
+  const depthOf = (n: GraphNode): number => (n.parent ? depthOf(nodes.get(n.parent)!) + 1 : 0);
+  for (const n of nodes.values()) if (n.ghost) n.depth = depthOf(n);
+  return model;
+}
+
 /** Group ids at `depth` or deeper: the collapsed set that shows `depth` levels of groups expanded. */
 export function groupsBelow(model: GraphModel, depth: number): Set<string> {
   const out = new Set<string>();
@@ -257,10 +314,15 @@ export function aggregateEdges(model: GraphModel, collapsed: Set<string>, cycles
     if (from === to) continue;
     const id = edgeKey(from, to);
     let v = merged.get(id);
-    if (!v) merged.set(id, (v = { id, from, to, count: 0, cycleCount: 0, level: e.level }));
+    if (!v) merged.set(id, (v = { id, from, to, count: 0, cycleCount: 0, level: e.level, added: 0, removed: 0 }));
     else if (e.level === 'module') v.level = 'module';
     v.count++;
     if (cycles?.edgeKeys.has(e.key)) v.cycleCount++;
+    if (e.change === 'added') v.added++;
+    else if (e.change === 'removed') v.removed++;
+  }
+  for (const v of merged.values()) {
+    if (v.added || v.removed) v.change = v.added && v.removed ? 'mixed' : v.added ? 'added' : 'removed';
   }
   return { nodes, edges: [...merged.values()], repOf };
 }
