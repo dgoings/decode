@@ -133,6 +133,11 @@ header .view-switch button { font-size: 13px; padding: 3px 14px; }
 .graph-cy { position: absolute; inset: 0; }
 .graph-cy[hidden], .graph-side[hidden] { display: none; }
 .graph-empty { margin: 24px; }
+
+/* Map view: color toggle, Show edges, and legend after the graph tools. */
+.map-tools { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; flex-basis: 100%; }
+.map-tools .segmented { margin-left: 0; }
+.map-edges { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; cursor: pointer; }
 .graph-side { width: 280px; flex-shrink: 0; overflow-y: auto; font-size: 13px; }
 .graph-side h3 {
   font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em;

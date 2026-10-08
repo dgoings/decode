@@ -45,11 +45,15 @@ export function readHashMode(): ColorMode {
   return readHashParam('mode') === 'churn' ? 'churn' : 'complexity';
 }
 
-export type ViewName = 'treemap' | 'graph' | 'compare';
+export type ViewName = 'treemap' | 'graph' | 'map' | 'compare';
 
 export function readHashView(): ViewName {
   const v = readHashParam('view');
-  return v === 'graph' || v === 'compare' ? v : 'treemap';
+  return v === 'graph' || v === 'map' || v === 'compare' ? v : 'treemap';
+}
+
+export function readHashEdges(): boolean {
+  return readHashParam('edges') !== '0';
 }
 
 /** One main-area view. Created lazily; only the active one is rendered. */
@@ -115,6 +119,92 @@ async function createGraphPane(el: HTMLElement, hooks: ViewHooks): Promise<View>
   return view;
 }
 
+interface MapView extends View {
+  mode: ColorMode;
+  edges: boolean;
+  setMode(mode: ColorMode): void;
+  setShowEdges(on: boolean): void;
+}
+
+/**
+ * Experimental map: the graph view in boxes mode (files as code-sized, metric-colored boxes) plus
+ * the treemap's color toggle and legend and a Show edges checkbox in its summary bar.
+ */
+async function createMapPane(el: HTMLElement, hooks: ViewHooks): Promise<MapView> {
+  const { createGraphView } = await import('./graph/view.ts');
+  const showEdges = readHashEdges();
+  const toggle = document.createElement('div');
+  toggle.className = 'segmented';
+  toggle.setAttribute('role', 'group');
+  toggle.setAttribute('aria-label', 'Color by');
+  const modeButtons = (
+    [
+      ['complexity', 'Complexity'],
+      ['churn', 'Churn'],
+    ] as const
+  ).map(([mode, label]) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = label;
+    b.dataset.mode = mode;
+    b.addEventListener('click', () => view.mode !== mode && view.setMode(mode));
+    toggle.append(b);
+    return b;
+  });
+  const edgesLabel = document.createElement('label');
+  edgesLabel.className = 'map-edges';
+  const edgesBox = document.createElement('input');
+  edgesBox.type = 'checkbox';
+  edgesBox.checked = showEdges;
+  edgesBox.addEventListener('change', () => view.setShowEdges(edgesBox.checked));
+  edgesLabel.append(edgesBox, ' Show edges');
+  const legendSlot = document.createElement('span');
+  legendSlot.className = 'map-legend';
+
+  function syncControls(): void {
+    for (const b of modeButtons) b.setAttribute('aria-pressed', String(b.dataset.mode === view.mode));
+    if (view.snap) legendSlot.replaceChildren(createLegend(colorScale(view.snap.files, view.mode), legendLabel(view.mode, view.snap)));
+  }
+
+  const graph = createGraphView(el, {
+    mode: 'boxes',
+    colorMode: readHashMode(),
+    showEdges,
+    onNodeContextMenu: hooks.onFileContextMenu,
+    barExtra: () => {
+      const tools = document.createElement('span');
+      tools.className = 'map-tools';
+      tools.append(hooks.barExtra(), toggle, edgesLabel, legendSlot);
+      syncControls();
+      return tools;
+    },
+  });
+  el.classList.add('map');
+  const view: MapView = {
+    el,
+    snap: null,
+    mode: readHashMode(),
+    edges: showEdges,
+    render(snap) {
+      view.snap = snap;
+      graph.render(snap);
+    },
+    setMode(mode) {
+      view.mode = mode;
+      writeHashParam('mode', mode);
+      graph.setColorMode(mode);
+      syncControls();
+    },
+    setShowEdges(on) {
+      view.edges = on;
+      edgesBox.checked = on;
+      writeHashParam('edges', on ? '1' : '0');
+      graph.setShowEdges(on);
+    },
+  };
+  return view;
+}
+
 function createViewSwitch(onPick: (name: ViewName) => void): { el: HTMLElement; set(name: ViewName): void } {
   const el = document.createElement('div');
   el.className = 'segmented view-switch';
@@ -124,6 +214,7 @@ function createViewSwitch(onPick: (name: ViewName) => void): { el: HTMLElement; 
     [
       ['treemap', 'Treemap'],
       ['graph', 'Graph'],
+      ['map', 'Map'],
       ['compare', 'Compare'],
     ] as const
   ).map(([name, label]) => {
@@ -190,6 +281,7 @@ export async function startApp(root: HTMLElement, source: DataSource): Promise<A
 
   let loadSeq = 0;
   let treemapView: TreemapView | null = null;
+  let mapView: MapView | null = null;
   const views = new Map<ViewName, Promise<View>>();
   let compare: Promise<CompareView> | null = null;
 
@@ -228,7 +320,12 @@ export async function startApp(root: HTMLElement, source: DataSource): Promise<A
     let v = views.get(name);
     if (!v) {
       const el = newPane(name);
-      v = name === 'graph' ? createGraphPane(el, hooks) : Promise.resolve((treemapView = createTreemapView(el, hooks)));
+      v =
+        name === 'graph'
+          ? createGraphPane(el, hooks)
+          : name === 'map'
+            ? createMapPane(el, hooks).then((m) => (mapView = m))
+            : Promise.resolve((treemapView = createTreemapView(el, hooks)));
       views.set(name, v);
     }
     return v;
@@ -272,6 +369,10 @@ export async function startApp(root: HTMLElement, source: DataSource): Promise<A
     const view = await getView(name);
     if (name !== active) return;
     showPane(view.el);
+    // Treemap and map share the mode= param; catch up with a change made in the other one.
+    const mode = readHashMode();
+    if (name === 'treemap' && treemapView && treemapView.mode !== mode) treemapView.setMode(mode);
+    if (name === 'map' && mapView && mapView.mode !== mode) mapView.setMode(mode);
     if (view.snap !== snap) {
       const t = performance.now();
       view.render(snap);
@@ -375,6 +476,8 @@ export async function startApp(root: HTMLElement, source: DataSource): Promise<A
     if (sha && sha !== app.snapshot?.sha && app.index && isAnalyzed(app.index, sha)) void app.load(sha);
     const mode = readHashMode();
     if (treemapView && mode !== treemapView.mode) treemapView.setMode(mode);
+    if (mapView && mode !== mapView.mode) mapView.setMode(mode);
+    if (mapView && readHashEdges() !== mapView.edges) mapView.setShowEdges(readHashEdges());
     const view = readHashView();
     if (view === 'compare' && active === 'compare') void showActive();
     else void app.setView(view);
