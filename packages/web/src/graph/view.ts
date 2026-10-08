@@ -169,7 +169,14 @@ const STYLE: cytoscape.StylesheetJson = [
 ];
 
 /** Dependency graph: directories as collapsible compound nodes, cycle edges in red, cycle list on the side. */
-export function createGraphView(container: HTMLElement): GraphView {
+export interface GraphViewOptions {
+  /** Right-click on a file node (not groups, modules, or ghosts). */
+  onNodeContextMenu?(path: string, ev: MouseEvent): void;
+  /** Extra element appended to the summary bar on each render. */
+  barExtra?(): Node;
+}
+
+export function createGraphView(container: HTMLElement, opts: GraphViewOptions = {}): GraphView {
   container.classList.add('graph');
   const bar = document.createElement('div');
   bar.className = 'summary-bar';
@@ -448,6 +455,7 @@ export function createGraphView(container: HTMLElement): GraphView {
       toggleAll,
     );
     bar.replaceChildren(ref, sha, counts, tierBadges(snap.languages), hint, tools);
+    if (opts.barExtra) bar.append(opts.barExtra());
   }
 
   function showTip(lines: { title: string; rows: Array<[string, string]> }, pos: Position): void {
@@ -521,6 +529,13 @@ export function createGraphView(container: HTMLElement): GraphView {
   });
   cy.on('mouseout', () => (tip.hidden = true));
   cy.on('viewport', () => (tip.hidden = true));
+  cy.on('cxttap', 'node', (e) => {
+    const n = model?.nodes.get((e.target as NodeSingular).id());
+    const ev = e.originalEvent as MouseEvent | undefined;
+    if (!n || n.type !== 'leaf' || n.kind !== 'file' || n.ghost || !ev || !opts.onNodeContextMenu) return;
+    tip.hidden = true;
+    opts.onNodeContextMenu(n.id, ev);
+  });
   cy.on('dbltap', 'node', (e) => toggle((e.target as NodeSingular).id()));
 
   const ro = new ResizeObserver(() => cy.resize());

@@ -192,3 +192,26 @@ header .view-switch button { font-size: 13px; padding: 3px 14px; }
 .ek-removed { background: repeating-linear-gradient(to right, #cf222e 0 5px, transparent 5px 8px); }
 .ek-mixed { background: repeating-linear-gradient(to right, #1f883d 0 5px, #cf222e 5px 8px); }
 
+
+/* Hidden files: right-click menu, summary-bar chip, and its popover. */
+.ctxmenu, .hidden-pop {
+  position: fixed; z-index: 50; background: var(--bg); border: 1px solid var(--line);
+  border-radius: 6px; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.14); font-size: 13px;
+}
+.ctxmenu { padding: 4px 0; min-width: 160px; }
+.ctxmenu button {
+  display: block; width: 100%; padding: 5px 12px; border: 0; background: none;
+  font: inherit; color: inherit; text-align: left; cursor: pointer;
+}
+.ctxmenu button:hover, .ctxmenu button:focus { background: #e3ecfb; outline: none; }
+.hidden-chip {
+  font: inherit; font-size: 12px; padding: 1px 8px; border-radius: 10px; cursor: pointer;
+  border: 1px solid #c9ccd2; background: var(--panel); color: var(--fg);
+}
+.hidden-chip:hover { background: #eceef2; }
+.hidden-pop { padding: 8px; width: 360px; max-width: calc(100vw - 8px); }
+.hidden-pop-head { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 6px; }
+.hidden-pop ul { list-style: none; margin: 0 0 8px; padding: 0; max-height: 240px; overflow-y: auto; }
+.hidden-pop li { display: flex; align-items: center; gap: 8px; padding: 2px 0; }
+.hidden-pop li span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ctxmenu[hidden], .hidden-pop[hidden], .hidden-chip[hidden] { display: none; }

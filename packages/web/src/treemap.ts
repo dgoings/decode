@@ -161,7 +161,12 @@ const fmt = (n: number) => n.toLocaleString();
 
 export function createTreemap(
   container: HTMLElement,
-  opts: { onFileClick?(path: string): void; style?: TreemapStyle } = {},
+  opts: {
+    onFileClick?(path: string): void;
+    /** Right-click on a file block (the browser menu is suppressed when this is set). */
+    onFileContextMenu?(path: string, ev: MouseEvent): void;
+    style?: TreemapStyle;
+  } = {},
 ): Treemap {
   const style = opts.style;
   container.classList.add('treemap');
@@ -356,6 +361,13 @@ export function createTreemap(
     if (n.data.children) zoom(n.data.path);
     else opts.onFileClick?.(n.data.path);
   };
+  const onContext = (e: MouseEvent) => {
+    const n = nodeAt(e);
+    if (!n?.data.file || !opts.onFileContextMenu) return;
+    e.preventDefault();
+    tip.hidden = true;
+    opts.onFileContextMenu(n.data.path, e);
+  };
   const onKey = (e: KeyboardEvent) => {
     if (e.key !== 'Escape' || !tree || !focus) return;
     const parent = parentOf.get(resolve(focus));
@@ -364,6 +376,7 @@ export function createTreemap(
   root.addEventListener('pointermove', onMove);
   root.addEventListener('pointerleave', onLeave);
   root.addEventListener('click', onClick);
+  root.addEventListener('contextmenu', onContext);
   document.addEventListener('keydown', onKey);
 
   let frame = 0;

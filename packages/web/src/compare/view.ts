@@ -12,6 +12,12 @@ export interface CompareDeps {
   snapshot(sha: string): Promise<Snapshot>;
   readParam(key: string): string | null;
   writeParam(key: string, value: string): void;
+  /** View-level filter (hidden files) applied to the fetched diff and head before rendering. */
+  filter(diff: SnapshotDiff, head: Snapshot): { diff: SnapshotDiff; head: Snapshot };
+  /** Right-click on a file block or file node. */
+  onFileContextMenu(path: string, ev: MouseEvent): void;
+  /** Extra element appended to the summary bar on each render. */
+  barExtra(): Node;
 }
 
 export interface CompareView {
@@ -19,6 +25,8 @@ export interface CompareView {
   setIndex(index: SnapshotIndex): void;
   /** Called when the pane becomes visible or the hash changes: (re)load base/head from the hash. */
   show(): void;
+  /** Re-apply the filter to the loaded comparison and re-render (no re-fetch). */
+  refresh(): void;
 }
 
 type Panel = 'treemap' | 'edges';
@@ -157,6 +165,9 @@ export function createCompareView(root: HTMLElement, deps: CompareDeps): Compare
   root.replaceChildren(summary, toolbar.el, empty, body);
 
   let index: SnapshotIndex | null = null;
+  /** Raw comparison as fetched. */
+  let raw: { diff: SnapshotDiff; head: Snapshot } | null = null;
+  /** Filtered comparison the panels render. */
   let state: { diff: SnapshotDiff; head: Snapshot; deltas: Map<string, FileDelta> } | null = null;
   let loadedKey: string | null = null;
   let seq = 0;
@@ -191,7 +202,7 @@ export function createCompareView(root: HTMLElement, deps: CompareDeps): Compare
       'muted',
       `files +${t.files.added} −${t.files.removed} ~${t.files.modified} renamed ${t.files.renamed} · code ${signed(t.code)} · edges +${t.edges.added} −${t.edges.removed}`,
     );
-    summary.replaceChildren(...side(diff.base), el('span', 'muted', '→'), ...side(diff.head), totals);
+    summary.replaceChildren(...side(diff.base), el('span', 'muted', '→'), ...side(diff.head), totals, deps.barExtra());
   }
 
   function tipRows(f: FileEntry): Array<[string, string]> {
@@ -217,6 +228,7 @@ export function createCompareView(root: HTMLElement, deps: CompareDeps): Compare
     if (!tmLegend.firstChild) tmLegend.replaceChildren(sliceLegend());
     if (!treemap) {
       treemap = createTreemap(tmBox, {
+        onFileContextMenu: deps.onFileContextMenu,
         style: {
           fill: (f) => (state?.deltas.get(f.path)?.status === 'removed' ? 'url(#tm-removed)' : NEUTRAL_FILL),
           className: (f) => {
@@ -234,7 +246,7 @@ export function createCompareView(root: HTMLElement, deps: CompareDeps): Compare
     if (!state) return;
     const { diff, head } = state;
     edgeTitle.textContent = `Dependency graph · +${fmt(diff.edges.added.length)} / −${fmt(diff.edges.removed.length)} edges`;
-    if (!graph) graph = createGraphView(graphBox);
+    if (!graph) graph = createGraphView(graphBox, { onNodeContextMenu: deps.onFileContextMenu });
     graph.render(head, buildCompareGraphModel(head, diff));
     graph.setChangedOnly(edgesChangedOnly.checked);
     graphNeedsFit = true;
@@ -269,12 +281,14 @@ export function createCompareView(root: HTMLElement, deps: CompareDeps): Compare
   applyPanel();
 
   function renderAll(): void {
-    if (!state) return;
+    if (!raw) return;
     if (root.hidden) {
       dirty = true;
       return;
     }
     dirty = false;
+    const { diff, head } = deps.filter(raw.diff, raw.head);
+    state = { diff, head, deltas: new Map(diff.files.map((d) => [d.path, d])) };
     renderSummary(state.diff);
     renderTreemap();
     renderEdges();
@@ -292,7 +306,7 @@ export function createCompareView(root: HTMLElement, deps: CompareDeps): Compare
       const diff = await deps.source.compare(base, head);
       const headSnap = await deps.snapshot(diff.head.sha);
       if (my !== seq) return;
-      state = { diff, head: headSnap, deltas: new Map(diff.files.map((d) => [d.path, d])) };
+      raw = { diff, head: headSnap };
       empty.hidden = true;
       body.hidden = false;
       renderAll();
@@ -301,6 +315,7 @@ export function createCompareView(root: HTMLElement, deps: CompareDeps): Compare
     } catch (err) {
       if (my !== seq) return;
       loadedKey = null;
+      raw = null;
       state = null;
       body.hidden = true;
       empty.hidden = false;
@@ -322,6 +337,7 @@ export function createCompareView(root: HTMLElement, deps: CompareDeps): Compare
     if (!base || !head) {
       seq++;
       loadedKey = null;
+      raw = null;
       state = null;
       body.hidden = true;
       empty.hidden = false;
@@ -341,5 +357,6 @@ export function createCompareView(root: HTMLElement, deps: CompareDeps): Compare
       toolbar.setIndex(next);
     },
     show,
+    refresh: renderAll,
   };
 }
