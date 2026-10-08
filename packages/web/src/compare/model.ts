@@ -17,36 +17,26 @@ export function deltaFiles(headFiles: FileEntry[], diff: SnapshotDiff, changedOn
   return out;
 }
 
-export type SortKey = 'path' | 'status' | 'code' | 'loc' | 'complexitySum' | 'complexityMax' | 'churnCommits';
-export interface SortSpec {
-  key: SortKey;
-  /** Numeric columns sort by absolute delta; `desc` puts the biggest change first. */
-  desc: boolean;
+export type SliceKind = 'grow' | 'shrink' | 'added' | 'removed';
+export interface Slice {
+  kind: SliceKind;
+  /** Fraction of the block width in (0, 1]: added lines / head code, or removed lines / base code. */
+  frac: number;
 }
 
-export const DEFAULT_SORT: SortSpec = { key: 'code', desc: true };
-
-/** Comparator for the biggest-changes table. Ties fall back to path ascending. */
-export function compareDeltas(spec: SortSpec): (a: FileDelta, b: FileDelta) => number {
-  const { key, desc } = spec;
-  const byPath = (a: FileDelta, b: FileDelta) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
-  return (a, b) => {
-    let c: number;
-    if (key === 'path' || key === 'status') {
-      const x = a[key];
-      const y = b[key];
-      c = x < y ? -1 : x > y ? 1 : 0;
-    } else {
-      c = Math.abs(a[key]) - Math.abs(b[key]);
-    }
-    if (desc) c = -c;
-    return c || byPath(a, b);
-  };
-}
-
-/** Changed files (everything but `unchanged`), sorted. */
-export function changedRows(diff: SnapshotDiff, spec: SortSpec = DEFAULT_SORT): FileDelta[] {
-  return diff.files.filter((d) => d.status !== 'unchanged').sort(compareDeltas(spec));
+/**
+ * Growth/shrink slice for one treemap block. Net code delta only: growth is Δ/headCode, shrink is
+ * −Δ/baseCode. Added and removed files are full width. Null when the code size did not change.
+ */
+export function sliceFor(d: FileDelta | undefined, f: FileEntry): Slice | null {
+  if (!d || d.status === 'unchanged') return null;
+  if (d.status === 'added') return { kind: 'added', frac: 1 };
+  if (d.status === 'removed') return { kind: 'removed', frac: 1 };
+  if (d.code === 0) return null;
+  const clamp = (x: number) => (Number.isFinite(x) && x > 0 ? Math.min(1, x) : 1);
+  if (d.code > 0) return { kind: 'grow', frac: clamp(d.code / (d.head?.code ?? f.code ?? 0)) };
+  const baseCode = d.base?.code ?? (f.code ?? 0) - d.code;
+  return { kind: 'shrink', frac: clamp(-d.code / baseCode) };
 }
 
 export type EdgeFilter = 'all' | 'added' | 'removed';
