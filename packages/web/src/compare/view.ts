@@ -1,18 +1,9 @@
 import type { FileDelta, FileEntry } from '@codeviz/core';
 import { WORKTREE, type DataSource, type Snapshot, type SnapshotDiff, type SnapshotIndex } from '../data.ts';
-import { scaleLinear } from 'd3-scale';
-import { interpolateRdBu } from 'd3-scale-chromatic';
 import { buildCompareGraphModel } from '../graph/model.ts';
 import { createGraphView, type GraphView } from '../graph/view.ts';
 import { createTreemap, type Treemap } from '../treemap.ts';
-import {
-  changedRows,
-  compareDeltas,
-  deltaFiles,
-  DEFAULT_SORT,
-  type SortKey,
-  type SortSpec,
-} from './model.ts';
+import { deltaFiles, sliceFor } from './model.ts';
 import { createCompareToolbar } from './toolbar.ts';
 
 export interface CompareDeps {
@@ -30,15 +21,17 @@ export interface CompareView {
   show(): void;
 }
 
-const MAX_ROWS = 200;
-type Panel = 'treemap' | 'edges' | 'changes';
+type Panel = 'treemap' | 'edges';
 const PANELS: Array<[Panel, string]> = [
   ['treemap', 'Treemap'],
   ['edges', 'Edges'],
-  ['changes', 'Changes'],
 ];
-const readPanel = (v: string | null): Panel => (v === 'edges' || v === 'changes' ? v : 'treemap');
-const UNCHANGED_FILL = '#d5d8dd';
+/** Anything else (including the retired `changes`) falls back to the treemap. */
+const readPanel = (v: string | null): Panel => (v === 'edges' ? v : 'treemap');
+const NEUTRAL_FILL = '#e1e4e8';
+/** GitHub's diff addition / deletion colors. */
+const GROW = '#1f883d';
+const SHRINK = '#cf222e';
 
 const fmt = (n: number) => n.toLocaleString();
 const signed = (n: number) => (n > 0 ? `+${fmt(n)}` : n < 0 ? `−${fmt(-n)}` : '0');
@@ -51,64 +44,61 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: 
   return e;
 }
 
-/** Diverging color on Δcode: blues shrink, reds grow; symmetric domain at the 95th percentile of |Δ|. */
-export function deltaScale(diff: SnapshotDiff): { hi: number; max: number; color(d: FileDelta | undefined): string } {
-  const abs = diff.files
-    .filter((d) => d.status !== 'unchanged')
-    .map((d) => Math.abs(d.code))
-    .sort((a, b) => a - b);
-  const p95 = abs.length ? abs[Math.floor(0.95 * (abs.length - 1))]! : 1;
-  const hi = Math.max(1, scaleLinear().domain([0, p95]).nice().domain()[1]!);
-  const at = (v: number) => {
-    if (v === 0) return interpolateRdBu(0.5);
-    const t = Math.min(1, Math.abs(v) / hi);
-    // Start a little off-centre so small changes are still tinted.
-    return interpolateRdBu(0.5 - Math.sign(v) * (0.1 + 0.4 * t));
-  };
-  return {
-    hi,
-    max: abs.length ? abs[abs.length - 1]! : 0,
-    color: (d) => (!d || d.status === 'unchanged' ? UNCHANGED_FILL : at(d.code)),
-  };
+const SVG_NS = 'http://www.w3.org/2000/svg';
+function svgEl<K extends keyof SVGElementTagNameMap>(tag: K, attrs: Record<string, string | number>): SVGElementTagNameMap[K] {
+  const e = document.createElementNS(SVG_NS, tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, String(v));
+  return e;
 }
 
-function deltaLegend(scale: ReturnType<typeof deltaScale>): HTMLElement {
-  const wrap = el('div', 'legend');
-  const bar = el('span', 'legend-bar');
-  const stops = Array.from({ length: 9 }, (_, i) => {
-    const v = scale.hi * (i / 4 - 1);
-    return scale.color({ status: 'modified', code: v } as FileDelta);
-  });
-  bar.style.background = `linear-gradient(to right, ${stops.join(', ')})`;
-  const clamped = scale.max > scale.hi;
-  const lo = el('span', undefined, `${clamped ? '≤' : ''}−${fmt(scale.hi)}`);
-  const hi = el('span', undefined, `${clamped ? '≥' : ''}+${fmt(scale.hi)}`);
-  if (clamped) lo.title = hi.title = `Clamped at the 95th percentile; largest change is ${fmt(scale.max)} lines`;
-  const swatch = (cls: string, label: string) => {
-    const s = el('span', `cmp-swatch ${cls}`);
-    return [s, el('span', undefined, label)];
-  };
+/** Growth/shrink slice along the block's left edge, plus a border for added/removed/renamed files. */
+function sliceOverlay(d: FileDelta | undefined, f: FileEntry, box: { x: number; y: number; w: number; h: number }): SVGElement | null {
+  const slice = sliceFor(d, f);
+  const renamed = d?.status === 'renamed';
+  if (!slice && !renamed) return null;
+  const g = svgEl('g', { class: 'cmp-overlay' });
+  if (slice) {
+    const w = Math.min(box.w, Math.max(2, slice.frac * box.w));
+    const red = slice.kind === 'shrink' || slice.kind === 'removed';
+    g.append(
+      svgEl('rect', {
+        class: `cmp-slice cmp-slice-${slice.kind}`,
+        'data-frac': slice.frac.toFixed(4),
+        x: box.x,
+        y: box.y,
+        width: w,
+        height: box.h,
+        fill: red ? SHRINK : GROW,
+      }),
+    );
+  }
+  const border = d?.status === 'added' || d?.status === 'removed' || renamed ? d!.status : null;
+  if (border && box.w > 2 && box.h > 2) {
+    g.append(
+      svgEl('rect', {
+        class: `cmp-border cmp-border-${border}`,
+        x: box.x + 1,
+        y: box.y + 1,
+        width: box.w - 2,
+        height: box.h - 2,
+      }),
+    );
+  }
+  return g;
+}
+
+function sliceLegend(): HTMLElement {
+  const wrap = el('div', 'legend cmp-legend');
+  const swatch = (cls: string, label: string) => [el('span', `cmp-swatch ${cls}`), el('span', undefined, label)];
   wrap.append(
-    el('span', 'legend-title', 'Δ code lines'),
-    lo,
-    bar,
-    hi,
-    ...swatch('sw-unchanged', 'unchanged'),
-    ...swatch('sw-added', 'added'),
-    ...swatch('sw-removed', 'removed'),
+    el('span', 'legend-title', 'Δ code lines, as a share of the file'),
+    ...swatch('sw-grow', 'added lines'),
+    ...swatch('sw-shrink', 'removed lines'),
+    ...swatch('sw-added', 'added file'),
+    ...swatch('sw-removed', 'removed file'),
   );
   return wrap;
 }
-
-const COLUMNS: Array<[SortKey, string]> = [
-  ['path', 'Path'],
-  ['status', 'Status'],
-  ['code', 'Δ code'],
-  ['loc', 'Δ loc'],
-  ['complexitySum', 'Δ cx sum'],
-  ['complexityMax', 'Δ cx max'],
-  ['churnCommits', 'Δ churn'],
-];
 
 export function createCompareView(root: HTMLElement, deps: CompareDeps): CompareView {
   root.classList.add('compare');
@@ -150,24 +140,11 @@ export function createCompareView(root: HTMLElement, deps: CompareDeps): Compare
   const graphBox = el('div', 'cmp-graph');
   edgePanel.append(edgeHead, graphBox);
 
-  // Panel 3: biggest changes.
-  const tablePanel = el('section', 'cmp-panel cmp-table');
-  const tableHead = el('div', 'cmp-panel-head');
-  const tableNote = el('span', 'muted');
-  tableHead.append(el('h3', undefined, 'Biggest changes'), tableNote);
-  const tableWrap = el('div', 'cmp-table-wrap');
-  const table = el('table');
-  const thead = el('thead');
-  const tbody = el('tbody');
-  table.append(thead, tbody);
-  tableWrap.append(table);
-  tablePanel.append(tableHead, tableWrap);
-
   // One panel at a time, picked by the segmented control under the toolbar (hash `panel=`).
   const panelSwitch = el('div', 'segmented cmp-panel-switch');
   panelSwitch.setAttribute('role', 'group');
   panelSwitch.setAttribute('aria-label', 'Panel');
-  const panelEls: Record<Panel, HTMLElement> = { treemap: tmPanel, edges: edgePanel, changes: tablePanel };
+  const panelEls: Record<Panel, HTMLElement> = { treemap: tmPanel, edges: edgePanel };
   const panelButtons = PANELS.map(([name, label]) => {
     const b = el('button', undefined, label);
     b.type = 'button';
@@ -176,7 +153,7 @@ export function createCompareView(root: HTMLElement, deps: CompareDeps): Compare
     panelSwitch.append(b);
     return b;
   });
-  body.append(panelSwitch, tmPanel, edgePanel, tablePanel);
+  body.append(panelSwitch, tmPanel, edgePanel);
   root.replaceChildren(summary, toolbar.el, empty, body);
 
   let index: SnapshotIndex | null = null;
@@ -184,11 +161,8 @@ export function createCompareView(root: HTMLElement, deps: CompareDeps): Compare
   let loadedKey: string | null = null;
   let seq = 0;
   let dirty = false;
-  let sort: SortSpec = DEFAULT_SORT;
-  let selected: string | null = null;
   let treemap: Treemap | null = null;
   let graph: GraphView | null = null;
-  let currentScale: ReturnType<typeof deltaScale> | null = null;
   let panel: Panel = readPanel(deps.readParam('panel'));
   /** Graph laid out while hidden (or resized since): fit it the next time Edges is shown. */
   let graphNeedsFit = false;
@@ -226,6 +200,11 @@ export function createCompareView(root: HTMLElement, deps: CompareDeps): Compare
     const rows: Array<[string, string]> = [['Status', d.oldPath ? `${d.status} from ${d.oldPath}` : d.status]];
     const now = d.status === 'removed' ? 0 : (f.code ?? 0);
     rows.push(['Code', `${fmt(now)} lines (${signed(d.code)})`]);
+    const slice = sliceFor(d, f);
+    if (slice && d.code !== 0) {
+      const pct = `${Math.round(slice.frac * 100)}% of ${slice.kind === 'grow' || slice.kind === 'added' ? 'file' : 'base file'}`;
+      rows.push(['Change', `${d.code > 0 ? '+' : '−'}${fmt(Math.abs(d.code))} lines (${pct})`]);
+    }
     rows.push(['Loc', signed(d.loc)]);
     rows.push(['Complexity', `${signed(d.complexitySum)} sum / ${signed(d.complexityMax)} max`]);
     rows.push(['Churn', `${signed(d.churnCommits)} commits`]);
@@ -234,25 +213,22 @@ export function createCompareView(root: HTMLElement, deps: CompareDeps): Compare
 
   function renderTreemap(): void {
     if (!state) return;
-    const { diff, head, deltas } = state;
-    const scale = deltaScale(diff);
-    tmLegend.replaceChildren(deltaLegend(scale));
+    const { diff, head } = state;
+    if (!tmLegend.firstChild) tmLegend.replaceChildren(sliceLegend());
     if (!treemap) {
       treemap = createTreemap(tmBox, {
-        onFileClick: (path) => selectRow(path, false),
         style: {
-          fill: (f) => currentScale!.color(state?.deltas.get(f.path)),
+          fill: (f) => (state?.deltas.get(f.path)?.status === 'removed' ? 'url(#tm-removed)' : NEUTRAL_FILL),
           className: (f) => {
             const s = state?.deltas.get(f.path)?.status;
-            return s === 'added' || s === 'removed' ? `cmp-${s}` : undefined;
+            return s === 'added' || s === 'removed' || s === 'renamed' ? `cmp-${s}` : undefined;
           },
+          overlay: (f, box) => sliceOverlay(state?.deltas.get(f.path), f, box),
           tipRows,
         },
       });
     }
-    currentScale = scale;
     treemap.render({ ...head, files: deltaFiles(head.files, diff, changedOnly.checked) }, 'complexity');
-    if (selected && deltas.has(selected)) treemap.reveal(selected);
   }
   function renderEdges(): void {
     if (!state) return;
@@ -292,55 +268,6 @@ export function createCompareView(root: HTMLElement, deps: CompareDeps): Compare
   }
   applyPanel();
 
-  function renderTable(): void {
-    if (!state) return;
-    const rows = changedRows(state.diff, sort);
-    tableNote.textContent =
-      rows.length > MAX_ROWS ? `Showing ${MAX_ROWS} of ${fmt(rows.length)} changed files` : `${fmt(rows.length)} changed files`;
-    const tr = el('tr');
-    for (const [key, label] of COLUMNS) {
-      const th = el('th');
-      const b = el('button', undefined, label + (sort.key === key ? (sort.desc ? ' ▾' : ' ▴') : ''));
-      b.type = 'button';
-      b.dataset.sort = key;
-      b.addEventListener('click', () => {
-        sort = sort.key === key ? { key, desc: !sort.desc } : { key, desc: key !== 'path' && key !== 'status' };
-        renderTable();
-      });
-      th.append(b);
-      if (key !== 'path' && key !== 'status') th.className = 'num';
-      tr.append(th);
-    }
-    thead.replaceChildren(tr);
-    tbody.replaceChildren(
-      ...rows.slice(0, MAX_ROWS).map((d) => {
-        const row = el('tr');
-        row.dataset.path = d.path;
-        if (d.path === selected) row.classList.add('selected');
-        const path = el('td', 'cmp-path', d.path);
-        if (d.oldPath) path.title = `renamed from ${d.oldPath}`;
-        row.append(path, el('td', `cmp-st st-${d.status}`, d.status));
-        for (const k of ['code', 'loc', 'complexitySum', 'complexityMax', 'churnCommits'] as const) {
-          const v = d[k];
-          row.append(el('td', `num${v > 0 ? ' up' : v < 0 ? ' down' : ''}`, signed(v)));
-        }
-        row.addEventListener('click', () => selectRow(d.path, true));
-        return row;
-      }),
-    );
-  }
-
-  function selectRow(path: string, fromTable: boolean): void {
-    selected = path;
-    for (const r of tbody.querySelectorAll<HTMLElement>('tr')) r.classList.toggle('selected', r.dataset.path === path);
-    if (fromTable) {
-      setPanel('treemap');
-      treemap?.reveal(path);
-    } else {
-      tbody.querySelector<HTMLElement>(`tr[data-path="${CSS.escape(path)}"]`)?.scrollIntoView({ block: 'nearest' });
-    }
-  }
-
   function renderAll(): void {
     if (!state) return;
     if (root.hidden) {
@@ -351,7 +278,6 @@ export function createCompareView(root: HTMLElement, deps: CompareDeps): Compare
     renderSummary(state.diff);
     renderTreemap();
     renderEdges();
-    renderTable();
   }
 
   async function load(base: string, head: string): Promise<void> {
@@ -367,7 +293,6 @@ export function createCompareView(root: HTMLElement, deps: CompareDeps): Compare
       const headSnap = await deps.snapshot(diff.head.sha);
       if (my !== seq) return;
       state = { diff, head: headSnap, deltas: new Map(diff.files.map((d) => [d.path, d])) };
-      selected = null;
       empty.hidden = true;
       body.hidden = false;
       renderAll();

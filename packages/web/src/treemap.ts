@@ -129,6 +129,8 @@ export interface TreemapStyle {
   fill(f: FileEntry): string;
   className?(f: FileEntry): string | undefined;
   tipRows?(f: FileEntry): Array<[string, string]>;
+  /** Extra marks drawn over the file's block and under its label (should not take pointer events). */
+  overlay?(f: FileEntry, box: { x: number; y: number; w: number; h: number }): SVGElement | null;
 }
 
 const SVG = 'http://www.w3.org/2000/svg';
@@ -256,7 +258,10 @@ export function createTreemap(
     const defs = svg('defs', {});
     const pat = svg('pattern', { id: 'tm-na', width: 6, height: 6, patternUnits: 'userSpaceOnUse', patternTransform: 'rotate(45)' });
     pat.append(svg('rect', { width: 6, height: 6, fill: '#ecedf0' }), svg('line', { x1: 0, y1: 0, x2: 0, y2: 6, stroke: '#c5c8ce', 'stroke-width': 2 }));
-    defs.append(pat);
+    // Red hatch for removed files in the delta treemap.
+    const rm = svg('pattern', { id: 'tm-removed', width: 6, height: 6, patternUnits: 'userSpaceOnUse', patternTransform: 'rotate(45)' });
+    rm.append(svg('rect', { width: 6, height: 6, fill: '#ffebe9' }), svg('line', { x1: 0, y1: 0, x2: 0, y2: 6, stroke: '#ff8182', 'stroke-width': 2 }));
+    defs.append(pat, rm);
     const frag = document.createDocumentFragment();
     frag.append(defs);
 
@@ -279,7 +284,9 @@ export function createTreemap(
         const file = n.data.file!;
         const fill = style ? style.fill(file) : scale!.color(metric(file, mode));
         const cls = ['tm-file', style?.className?.(file), file.path === selected ? 'tm-selected' : undefined];
-        frag.append(svg('rect', { class: cls.filter(Boolean).join(' '), 'data-i': i, x: n.x0, y: n.y0, width: w, height: ht, fill }));
+        frag.append(svg('rect', { class: cls.filter(Boolean).join(' '), 'data-i': i, 'data-path': file.path, x: n.x0, y: n.y0, width: w, height: ht, fill }));
+        const extra = style?.overlay?.(file, { x: n.x0, y: n.y0, w, h: ht });
+        if (extra) frag.append(extra);
         const label = ht >= 14 ? fit(n.data.name, w) : null;
         if (label) {
           const t = svg('text', { class: 'tm-label', x: n.x0 + 3, y: n.y0 + 11, fill: inkFor(fill) });
