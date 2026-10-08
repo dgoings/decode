@@ -2,6 +2,9 @@ import cytoscape, { type Core, type ElementDefinition, type NodeSingular, type E
 import fcose from 'cytoscape-fcose';
 import type { Snapshot } from '../data.ts';
 import { tierBadges } from '../refpicker.ts';
+import { colorScale, metric, type ColorMode, type ColorScale } from '../treemap.ts';
+import type { FileEntry } from '@codeviz/core';
+import { boxSize } from './boxes.ts';
 import {
   aggregateEdges,
   ancestors,
@@ -25,6 +28,10 @@ export interface GraphView {
   setChangedOnly(on: boolean): void;
   /** Re-measure the container (after it was hidden or resized); `fit` also fits the view. */
   resize(fit: boolean): void;
+  /** Boxes mode: recolor file boxes by complexity or churn. */
+  setColorMode(mode: ColorMode): void;
+  /** Hide or show all edges without moving any node. */
+  setShowEdges(on: boolean): void;
   destroy(): void;
 }
 
@@ -166,7 +173,46 @@ const STYLE: cytoscape.StylesheetJson = [
   { selector: '.unchanged-hidden', style: { display: 'none' } },
   { selector: 'node:selected', style: { 'border-width': 3, 'border-color': '#2f6fdb' } },
   { selector: 'edge:selected', style: { 'line-color': '#2f6fdb', 'target-arrow-color': '#2f6fdb' } },
+  { selector: 'edge.edges-off', style: { display: 'none' } },
 ];
+
+/** Boxes mode (map view): files and collapsed folders as sized, colored rectangles with the label inside. */
+const BOX_STYLE: cytoscape.StylesheetJson = [
+  {
+    selector: 'node[?box]',
+    style: {
+      shape: 'rectangle',
+      width: 'data(w)',
+      height: 'data(h)',
+      'background-color': 'data(bg)',
+      'border-width': 1,
+      'border-color': '#ffffff',
+      label: 'data(boxLabel)',
+      'text-valign': 'center',
+      'text-halign': 'center',
+      'text-margin-y': 0,
+      'text-wrap': 'ellipsis',
+      'text-max-width': 'data(tmw)',
+      'font-size': 11,
+      color: 'data(fg)',
+    },
+  },
+  { selector: 'node[?box][type = "group"]', style: { 'border-color': '#9aa1ab', 'font-size': 13 } },
+  { selector: 'node[?box]:selected', style: { 'border-width': 3, 'border-color': '#2f6fdb' } },
+];
+
+/** Neutral grey for files without the active metric (the treemap's hatched n/a fill does not exist here). */
+const NA_BOX = '#e3e5e9';
+const BOX_FOLDER_MAX = 320;
+const fmtOr = (v: number | undefined) => (v === undefined ? 'n/a' : String(v));
+
+/** Dark text on light fills, white on dark ones. */
+function textOn(bg: string): string {
+  const m = /^rgb\((\d+), ?(\d+), ?(\d+)\)$/.exec(bg);
+  if (!m) return '#1d2025';
+  const [r, g, b] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  return 0.299 * r + 0.587 * g + 0.114 * b < 140 ? '#ffffff' : '#1d2025';
+}
 
 /** Dependency graph: directories as collapsible compound nodes, cycle edges in red, cycle list on the side. */
 export interface GraphViewOptions {
@@ -174,6 +220,12 @@ export interface GraphViewOptions {
   onNodeContextMenu?(path: string, ev: MouseEvent): void;
   /** Extra element appended to the summary bar on each render. */
   barExtra?(): Node;
+  /** 'boxes' (map view): files and collapsed folders drawn as rectangles sized by code. Default 'dots'. */
+  mode?: 'dots' | 'boxes';
+  /** Boxes mode: initial color metric. */
+  colorMode?: ColorMode;
+  /** Initial edge visibility (default true). */
+  showEdges?: boolean;
 }
 
 export function createGraphView(container: HTMLElement, opts: GraphViewOptions = {}): GraphView {
@@ -198,9 +250,10 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions =
   row.append(stage, side);
   container.replaceChildren(bar, row);
 
+  const boxes = opts.mode === 'boxes';
   const cy: Core = cytoscape({
     container: cyBox,
-    style: STYLE,
+    style: boxes ? [...STYLE, ...BOX_STYLE] : STYLE,
     minZoom: 0.05,
     maxZoom: 4,
     boxSelectionEnabled: false,
@@ -214,6 +267,10 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions =
   let counts: HTMLElement | null = null;
   let toggleAll: HTMLButtonElement | null = null;
   let changedOnly = false;
+  let colorMode: ColorMode = opts.colorMode ?? 'complexity';
+  let showEdges = opts.showEdges ?? true;
+  let scale: ColorScale | null = null;
+  let filesByPath = new Map<string, FileEntry>();
 
   function nodeData(n: VisibleGraph['nodes'][number]): Record<string, unknown> {
     const group = n.type === 'group';
@@ -227,7 +284,24 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions =
       ghost: n.ghost ?? false,
       label: group ? `${hasKids ? '▾' : '▸'} ${n.label}` : n.label,
       size: group || isOpaqueKind(n.kind) ? Math.round(22 + 5 * Math.sqrt(n.fileCount ?? 0)) : 14,
+      ...(boxes ? boxData(n, hasKids) : {}),
     };
+  }
+
+  /** Box geometry and colors; expanded groups are compounds and must not keep a collapsed box's data. */
+  function boxData(n: VisibleGraph['nodes'][number], hasKids: boolean): Record<string, unknown> {
+    if (hasKids) return { box: false };
+    const file = n.type === 'leaf' && n.kind === 'file';
+    const { w, h } = file ? boxSize(n.metrics?.code ?? 0) : boxSize(n.code ?? 0, BOX_FOLDER_MAX);
+    const bg = file ? fileColor(n.id) : isOpaqueKind(n.kind) ? '#c8ece4' : '#dfe3ea';
+    const label = n.type === 'group' ? `▸ ${n.label}` : n.label;
+    return { box: true, w, h, bg, fg: textOn(bg), tmw: Math.max(1, w - 6), boxLabel: w < 40 ? '' : label };
+  }
+
+  function fileColor(path: string): string {
+    const f = filesByPath.get(path);
+    const v = f ? metric(f, colorMode) : undefined;
+    return v === undefined || !scale ? NA_BOX : scale.color(v);
   }
 
   /** Lay out the shown elements only (fcose throws on display:none nodes hidden by Changed only). */
@@ -235,17 +309,19 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions =
     const t = performance.now();
     const incremental = fixed.length > 0;
     cy.elements()
-      .not('.unchanged-hidden')
+      .not('.unchanged-hidden, .edges-off')
       .layout({
         name: 'fcose',
         animate: false,
         randomize: !incremental,
         quality: incremental ? 'proof' : 'default',
-        nodeDimensionsIncludeLabels: true,
-        idealEdgeLength: 70,
-        nodeRepulsion: 6500,
+        nodeDimensionsIncludeLabels: !boxes,
+        idealEdgeLength: boxes ? 120 : 70,
+        nodeRepulsion: boxes ? 40000 : 6500,
         nestingFactor: 0.4,
-        packComponents: false,
+        packComponents: boxes,
+        // Boxes: stronger (compound) gravity, else fcose spreads loosely connected folders over ~10k px.
+        ...(boxes ? { gravity: 1, gravityCompound: 3, gravityRangeCompound: 0.8 } : {}),
         fixedNodeConstraint: incremental
           ? fixed.map((n) => ({ nodeId: n.id(), position: { ...n.position() } }))
           : undefined,
@@ -299,6 +375,7 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions =
         })),
       );
       applyChangedOnly();
+      if (!showEdges) cy.edges().addClass('edges-off');
     });
     if (incremental && added.length) {
       const fresh = new Set(added.map((d) => d.data.id!));
@@ -502,6 +579,12 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions =
     const rows: Array<[string, string]> = [];
     if (n.type === 'group' || isOpaqueKind(n.kind)) {
       rows.push(['Files', na(n.fileCount)], ['Code', `${na(n.code)} lines`]);
+    } else if (boxes && filesByPath.has(n.id)) {
+      // Same rows as the treemap tooltip.
+      const f = filesByPath.get(n.id)!;
+      rows.push(['Lines', `${fmtOr(f.loc)} loc / ${fmtOr(f.code)} code / ${fmtOr(f.comments)} comments`]);
+      rows.push(['Complexity', f.complexity ? `${f.complexity.sum} sum / ${f.complexity.max} max / ${f.complexity.functions} functions` : 'n/a']);
+      rows.push(['Churn', f.churn ? `${f.churn.commits} commits / ${f.churn.authors} authors` : 'n/a']);
     } else if (n.metrics) {
       rows.push(['Code', `${na(n.metrics.code)} lines`]);
       rows.push(['Complexity', `${na(n.metrics.complexityMax)} max`]);
@@ -546,6 +629,10 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions =
     render(next, prebuilt) {
       snap = next;
       model = prebuilt ?? buildGraphModel(next);
+      if (boxes) {
+        filesByPath = new Map(next.files.map((f) => [f.path, f]));
+        scale = colorScale(next.files, colorMode);
+      }
       cycles = findCycles(model);
       // Start collapsed: only the repo root's direct children are open.
       collapsed = groupsBelow(model, 1);
@@ -580,6 +667,25 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions =
     resize(fit) {
       cy.resize();
       if (fit) fitVisible();
+    },
+    setColorMode(mode) {
+      if (mode === colorMode) return;
+      colorMode = mode;
+      if (!boxes || !snap) return;
+      scale = colorScale(snap.files, colorMode);
+      cy.batch(() => {
+        cy.nodes('[?box][type = "leaf"][kind = "file"]').forEach((n) => {
+          const bg = fileColor(n.id());
+          n.data({ bg, fg: textOn(bg) });
+        });
+      });
+    },
+    setShowEdges(on) {
+      if (on === showEdges) return;
+      showEdges = on;
+      tip.hidden = true;
+      if (on) cy.edges().removeClass('edges-off');
+      else cy.edges().addClass('edges-off');
     },
     destroy() {
       ro.disconnect();
