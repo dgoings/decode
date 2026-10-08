@@ -1,10 +1,9 @@
-import type { Core, EdgeSingular } from 'cytoscape';
 import type { FileDelta, FileEntry } from '@codeviz/core';
 import { WORKTREE, type DataSource, type Snapshot, type SnapshotDiff, type SnapshotIndex } from '../data.ts';
-import { ancestors, buildGraphModel, type GraphModel } from '../graph/model.ts';
+import { buildCompareGraphModel } from '../graph/model.ts';
 import { createGraphView, type GraphView } from '../graph/view.ts';
 import { createTreemap, type Treemap } from '../treemap.ts';
-import { deltaFiles, edgeSnapshot, sliceFor, type EdgeFilter } from './model.ts';
+import { deltaFiles, sliceFor } from './model.ts';
 import { createCompareToolbar } from './toolbar.ts';
 
 export interface CompareDeps {
@@ -33,8 +32,6 @@ const NEUTRAL_FILL = '#e1e4e8';
 /** GitHub's diff addition / deletion colors. */
 const GROW = '#1f883d';
 const SHRINK = '#cf222e';
-const ADDED_EDGE = '#15803d';
-const REMOVED_EDGE = '#d92d20';
 
 const fmt = (n: number) => n.toLocaleString();
 const signed = (n: number) => (n > 0 ? `+${fmt(n)}` : n < 0 ? `−${fmt(-n)}` : '0');
@@ -128,20 +125,20 @@ export function createCompareView(root: HTMLElement, deps: CompareDeps): Compare
   const tmBox = el('div');
   tmPanel.append(tmHead, tmBox);
 
-  // Panel 2: edge changes.
+  // Panel 2: head's dependency graph with added / removed edges highlighted.
   const edgePanel = el('section', 'cmp-panel cmp-edges');
   const edgeHead = el('div', 'cmp-panel-head');
-  const edgeTitle = el('h3', undefined, 'Edge changes');
-  const edgeFilter = el('div', 'segmented');
-  edgeFilter.setAttribute('role', 'group');
-  edgeFilter.setAttribute('aria-label', 'Edges');
+  const edgeTitle = el('h3', undefined, 'Dependency graph');
+  const edgesChangedLabel = el('label', 'cmp-check');
+  const edgesChangedOnly = el('input');
+  edgesChangedOnly.type = 'checkbox';
+  edgesChangedOnly.name = 'edges-changed-only';
+  edgesChangedLabel.append(edgesChangedOnly, ' Changed only');
   const edgeKey = el('span', 'cmp-edge-key');
-  edgeKey.append(el('span', 'ek-added'), 'added ', el('span', 'ek-removed'), 'removed');
-  edgeHead.append(edgeTitle, edgeKey, edgeFilter);
+  edgeKey.append(el('span', 'ek-added'), 'added ', el('span', 'ek-removed'), 'removed ', el('span', 'ek-mixed'), 'both');
+  edgeHead.append(edgeTitle, edgesChangedLabel, edgeKey);
   const graphBox = el('div', 'cmp-graph');
-  const edgeEmpty = el('p', 'muted cmp-empty', 'No dependency edges changed.');
-  edgeEmpty.hidden = true;
-  edgePanel.append(edgeHead, graphBox, edgeEmpty);
+  edgePanel.append(edgeHead, graphBox);
 
   // One panel at a time, picked by the segmented control under the toolbar (hash `panel=`).
   const panelSwitch = el('div', 'segmented cmp-panel-switch');
@@ -164,36 +161,14 @@ export function createCompareView(root: HTMLElement, deps: CompareDeps): Compare
   let loadedKey: string | null = null;
   let seq = 0;
   let dirty = false;
-  let filter: EdgeFilter = 'all';
   let treemap: Treemap | null = null;
   let graph: GraphView | null = null;
-  let graphModel: GraphModel | null = null;
-  let changedEdges: Array<{ from: string; to: string; kind: string }> = [];
   let panel: Panel = readPanel(deps.readParam('panel'));
   /** Graph laid out while hidden (or resized since): fit it the next time Edges is shown. */
   let graphNeedsFit = false;
   let graphSize = '';
 
-  const filterButtons = (
-    [
-      ['all', 'All'],
-      ['added', 'Added'],
-      ['removed', 'Removed'],
-    ] as const
-  ).map(([name, label]) => {
-    const b = el('button', undefined, label);
-    b.type = 'button';
-    b.dataset.filter = name;
-    b.setAttribute('aria-pressed', String(name === filter));
-    b.addEventListener('click', () => {
-      if (filter === name) return;
-      filter = name;
-      for (const x of filterButtons) x.setAttribute('aria-pressed', String(x.dataset.filter === name));
-      renderEdges();
-    });
-    edgeFilter.append(b);
-    return b;
-  });
+  edgesChangedOnly.addEventListener('change', () => graph?.setChangedOnly(edgesChangedOnly.checked));
 
   changedOnly.addEventListener('change', () => renderTreemap());
 
@@ -255,71 +230,24 @@ export function createCompareView(root: HTMLElement, deps: CompareDeps): Compare
     }
     treemap.render({ ...head, files: deltaFiles(head.files, diff, changedOnly.checked) }, 'complexity');
   }
-  /** Color changed edges through the graph view's Cytoscape instance (graph/ has no kind hook). */
-  function hookEdgeStyling(): void {
-    const cy = graphCy();
-    if (!cy) {
-      graphBox.dataset.edgeStyling = 'none';
-      return;
-    }
-    graphBox.dataset.edgeStyling = 'cy';
-    cy.style()
-      .selector('edge[change = "added"]')
-      .style({ 'line-color': ADDED_EDGE, 'target-arrow-color': ADDED_EDGE, width: 2.5, opacity: 1 })
-      .selector('edge[change = "removed"]')
-      .style({ 'line-color': REMOVED_EDGE, 'target-arrow-color': REMOVED_EDGE, 'line-style': 'dashed', width: 2.5, opacity: 1 })
-      .selector('edge[change = "mixed"]')
-      .style({ 'line-color': '#8a5a00', 'target-arrow-color': '#8a5a00', 'line-style': 'dotted', width: 2.5 })
-      .update();
-    const under = (vis: string, id: string) => vis === id || (graphModel ? ancestors(graphModel, id).includes(vis) : false);
-    cy.on('add', 'edge', (e) => {
-      const edge = e.target as EdgeSingular;
-      const s = edge.source().id();
-      const t = edge.target().id();
-      const kinds = new Set(changedEdges.filter((c) => under(s, c.from) && under(t, c.to)).map((c) => c.kind));
-      edge.data('change', kinds.size === 1 ? [...kinds][0] : kinds.size ? 'mixed' : undefined);
-    });
-  }
-
   function renderEdges(): void {
     if (!state) return;
     const { diff, head } = state;
-    const added = diff.edges.added.length;
-    const removed = diff.edges.removed.length;
-    edgeTitle.textContent = `Edge changes · +${fmt(added)} / −${fmt(removed)}`;
-    const snap = edgeSnapshot(diff, head, filter);
-    graphBox.dataset.edges = filter;
-    changedEdges = snap.edges;
-    const none = snap.edges.length === 0;
-    edgeEmpty.hidden = !none;
-    graphBox.hidden = none;
-    if (none) {
-      edgeEmpty.textContent = added + removed ? `No ${filter} edges.` : 'No dependency edges changed.';
-      return;
-    }
-    graphModel = buildGraphModel(snap);
-    if (!graph) {
-      graph = createGraphView(graphBox);
-      hookEdgeStyling();
-    }
-    graph.render(snap);
+    edgeTitle.textContent = `Dependency graph · +${fmt(diff.edges.added.length)} / −${fmt(diff.edges.removed.length)} edges`;
+    if (!graph) graph = createGraphView(graphBox);
+    graph.render(head, buildCompareGraphModel(head, diff));
+    graph.setChangedOnly(edgesChangedOnly.checked);
     graphNeedsFit = true;
     if (panel === 'edges') refitGraph();
   }
 
-  function graphCy(): Core | undefined {
-    return (graphBox.querySelector('.graph-cy') as (HTMLElement & { _cyreg?: { cy?: Core } }) | null)?._cyreg?.cy;
-  }
-
   /** Cytoscape cannot size itself while display:none; resize and re-fit once its box is visible. */
   function refitGraph(): void {
-    const cy = graphCy();
-    if (!cy || graphBox.hidden) return;
+    if (!graph || graphBox.hidden) return;
     const { width, height } = graphBox.getBoundingClientRect();
     if (width < 10 || height < 10) return;
     const size = `${Math.round(width)}x${Math.round(height)}`;
-    cy.resize();
-    if (graphNeedsFit || size !== graphSize) cy.fit(undefined, 30);
+    graph.resize(graphNeedsFit || size !== graphSize);
     graphNeedsFit = false;
     graphSize = size;
   }

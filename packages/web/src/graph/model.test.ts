@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test';
-import type { Snapshot } from '@codeviz/core';
-import { aggregateEdges, buildGraphModel, cyclePath, edgeKey, findCycles, groupsBelow } from './model.ts';
+import type { Snapshot, SnapshotDiff } from '@codeviz/core';
+import { aggregateEdges, buildCompareGraphModel, buildGraphModel, cyclePath, edgeKey, findCycles, groupsBelow } from './model.ts';
 
 const e = (from: string, to: string) => ({ from, to, kind: 'import', level: 'file' as const });
 
@@ -169,4 +169,43 @@ test('opaque module ids without real nesting stay flat; unknown module endpoints
   expect([...m.nodes.keys()].sort()).toEqual(['a/x', 'a/y', 'ext/z']);
   expect([...m.nodes.values()].every((n) => n.type === 'leaf' && n.parent === null)).toBe(true);
   expect(m.nodes.get('ext/z')!.kind).toBe('module');
+});
+
+test('buildCompareGraphModel marks added edges, adds removed ones with ghost endpoints, and aggregates to mixed', () => {
+  const diff = {
+    edges: {
+      added: [e('src/a/y.ts', 'lib/u.ts')],
+      removed: [e('src/a/gone.ts', 'lib/v.ts')],
+    },
+  } as unknown as SnapshotDiff;
+  const head = { ...snap, edges: [...(snap.edges as unknown[]), e('src/a/y.ts', 'lib/u.ts')] } as unknown as Snapshot;
+  const m = buildCompareGraphModel(head, diff);
+  const change = (from: string, to: string) => m.edges.find((x) => x.key === edgeKey(from, to))?.change;
+  expect(change('src/a/y.ts', 'lib/u.ts')).toBe('added');
+  expect(change('src/a/gone.ts', 'lib/v.ts')).toBe('removed');
+  expect(change('src/a/x.ts', 'lib/v.ts')).toBeUndefined();
+  const ghost = m.nodes.get('src/a/gone.ts')!;
+  expect(ghost.ghost).toBe(true);
+  expect(ghost.parent).toBe('src/a');
+  expect(ghost.depth).toBe(2);
+  expect(m.children.get('src/a')).toContain('src/a/gone.ts');
+
+  // Collapsing src/a and lib merges both changed edges (and the unchanged x -> v) into one.
+  const v = aggregateEdges(m, new Set(['src/a', 'lib']));
+  const agg = v.edges.find((x) => x.from === 'src/a' && x.to === 'lib')!;
+  expect([agg.count, agg.added, agg.removed, agg.change]).toEqual([3, 1, 1, 'mixed']);
+  // The ordinary model carries no change info.
+  expect(aggregateEdges(buildGraphModel(snap), new Set(['src/a', 'lib'])).edges.every((x) => x.change === undefined)).toBe(true);
+});
+
+test('findCycles ignores removed (base-only) edges', () => {
+  // Head: lib/u -> lib/v. Base also had lib/v -> lib/u, which would close a cycle.
+  const head = { ...snap, edges: [e('lib/u.ts', 'lib/v.ts')] } as unknown as Snapshot;
+  const diff = { edges: { added: [], removed: [e('lib/v.ts', 'lib/u.ts')] } } as unknown as SnapshotDiff;
+  const m = buildCompareGraphModel(head, diff);
+  expect(m.edges.find((x) => x.key === edgeKey('lib/v.ts', 'lib/u.ts'))?.change).toBe('removed');
+  const c = findCycles(m);
+  expect(c.components).toEqual([]);
+  expect(c.edgeKeys.size).toBe(0);
+  expect(aggregateEdges(m, new Set(), c).edges.every((x) => x.cycleCount === 0)).toBe(true);
 });
