@@ -44,6 +44,34 @@ export interface Overlay extends Omit<OverlaySummary, 'rows'> {
   rows: [string, number][];
 }
 
+/** Mirrors GET /api/traces (and snapshots/traces/index.json) entries. */
+export interface TraceInfo {
+  id: string;
+  source: 'browser' | 'server' | 'cpuprofile';
+  sha: string;
+  repoId?: string;
+  startedAt: string;
+  tickMs: number;
+  ticks: number;
+  durationMs: number;
+  /** Streamed into `codeviz serve --trace-listen`; may still grow. */
+  live: boolean;
+}
+
+/** One trace tick (docs/trace-format.md): deltas since the previous tick. */
+export interface TraceTick {
+  t: number;
+  files: [string, number][];
+  edges: [string, string, number][];
+  functions?: [string, string, number][];
+  dropped?: number;
+}
+
+export interface Trace {
+  header: { sha: string; repoId?: string; startedAt: string; tickMs: number; source: TraceInfo['source'] };
+  ticks: TraceTick[];
+}
+
 export interface DataSource {
   readonly kind: 'api' | 'static';
   index(): Promise<SnapshotIndex>;
@@ -54,6 +82,11 @@ export interface DataSource {
   /** Overlays available as extra color modes; [] when there are none. */
   overlays(): Promise<OverlaySummary[]>;
   overlay(name: string): Promise<Overlay>;
+  /** Runtime traces (`--trace`, live posts); [] when there are none. */
+  traces(): Promise<TraceInfo[]>;
+  trace(id: string): Promise<Trace>;
+  /** Live traces only: call `onTick` for tick `from` onward as they arrive. Returns a close function. */
+  traceStream?(id: string, from: number, onTick: (tick: TraceTick) => void): () => void;
 }
 
 async function getJson<T>(url: string, init?: RequestInit): Promise<T> {
@@ -111,6 +144,30 @@ export class ApiDataSource implements DataSource {
 
   overlay(name: string): Promise<Overlay> {
     return getJson(`${this.base}/overlays/${encodeURIComponent(name)}`);
+  }
+
+  traces(): Promise<TraceInfo[]> {
+    return getJson(`${this.base}/traces`);
+  }
+
+  trace(id: string): Promise<Trace> {
+    return getJson(`${this.base}/traces/${encodeURIComponent(id)}`);
+  }
+
+  traceStream(id: string, from: number, onTick: (tick: TraceTick) => void): () => void {
+    const es = new EventSource(`${this.base}/traces/${encodeURIComponent(id)}/stream?from=${from}`);
+    es.onmessage = (ev) => {
+      let tick: TraceTick;
+      try {
+        tick = JSON.parse(ev.data as string) as TraceTick;
+      } catch {
+        return;
+      }
+      onTick(tick);
+    };
+    // A reconnect would replay from `from` again; the caller re-subscribes when it needs to.
+    es.onerror = () => es.close();
+    return () => es.close();
   }
 }
 
@@ -176,6 +233,17 @@ export class StaticDataSource implements DataSource {
     const n = encodeURIComponent(name);
     const gz = await getMaybeGzipJson<Overlay>(`${this.base}/overlays/${n}.json.gz`);
     return gz ?? getJson(`${this.base}/overlays/${n}.json`);
+  }
+
+  /** `snapshots/traces/index.json` from `codeviz export --trace` (recorded traces only). */
+  async traces(): Promise<TraceInfo[]> {
+    return (await getMaybeGzipJson<TraceInfo[]>(`${this.base}/traces/index.json`)) ?? [];
+  }
+
+  async trace(id: string): Promise<Trace> {
+    const t = await getMaybeGzipJson<Trace>(`${this.base}/traces/${encodeURIComponent(id)}.json.gz`);
+    if (!t) throw new Error(`trace ${id} is not in this export`);
+    return t;
   }
 }
 
