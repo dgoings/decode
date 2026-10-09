@@ -16,8 +16,9 @@
 //  - rewrites top-level `const NAME =` to `let   NAME =` (same length, so line/column positions hold),
 //  - appends `NAME = wrap(NAME)` for every top-level function declaration and top-level const/let
 //    binding (only actual non-class functions get wrapped). The wrapper counts calls per function and
-//    every Nth call records caller-file -> this-file from the stack (weighted ×N in the trace).
-// Calls made through references captured before the module finished evaluating are not counted.
+//    on a random 1-in-N call records caller-file -> this-file from the stack (weighted ×N in the trace).
+// Calls made through references captured before the module finished evaluating are not counted, and
+// JavaScriptCore drops the caller frame of strict-mode tail calls (`return f(x)`), so those edges are missed.
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { appendFileSync } from 'node:fs';
@@ -44,6 +45,7 @@ function setup(): void {
   const TICK = Number(env.CODEVIZ_TRACE_TICK_MS) || 1000;
   const SAMPLE = Math.max(1, Number(env.CODEVIZ_TRACE_SAMPLE) || 10);
   const OUT_FILE = env.CODEVIZ_TRACE_FILE;
+  const DEBUG = !!env.CODEVIZ_TRACE_DEBUG;
   const OUT_URL = env.CODEVIZ_TRACE_URL ?? 'http://127.0.0.1:7357/trace';
   const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
   // onLoad must return contents for every match, so the native filter is the user filter anchored at ROOT.
@@ -91,6 +93,7 @@ function setup(): void {
     const t0 = performance.now();
     stats.samples++;
     const lines = (new Error().stack ?? '').split('\n');
+    if (DEBUG && stats.samples <= 5) console.error(`[codeviz-trace] sample for ${callee}:\n${lines.slice(0, 8).join('\n')}`);
     for (const line of lines) {
       const m = /\(?((?:file:\/\/)?\/[^()]+?):\d+:\d+\)?\s*$/.exec(line);
       if (!m) continue;
@@ -103,7 +106,6 @@ function setup(): void {
     stats.sampleMs += performance.now() - t0;
   };
 
-  let seq = 0;
   const wrap = (fn: any, file: string, name: string): any => {
     if (typeof fn !== 'function' || fn.__codeviz) return fn;
     let src = '';
@@ -118,7 +120,8 @@ function setup(): void {
     stats.wrapped++;
     const w = function (this: unknown, ...args: unknown[]) {
       c.n++;
-      if (++seq % SAMPLE === 0) callerFile(file);
+      // Random (not every-Nth) so a fixed call pattern per request cannot alias onto one function.
+      if (SAMPLE === 1 || Math.random() * SAMPLE < 1) callerFile(file);
       // eslint-disable-next-line prefer-rest-params
       return new.target ? Reflect.construct(fn, args, new.target) : fn.apply(this, args);
     };

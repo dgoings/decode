@@ -1,4 +1,6 @@
 // Script-to-source mapping and CPU profile (.cpuprofile / CDP Profiler.stop) bucketing.
+import { isAbsolute } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { fetchText, LineIndex, loadSourceMap, RepoPaths, sourceMappingUrl, type SourceMapIndex } from './sourcemap.ts';
 
 export interface CallFrame {
@@ -55,7 +57,8 @@ export class ScriptMapper {
 
   private async load(url: string, getSource: () => Promise<string | undefined>, mapRef?: string): Promise<ScriptInfo> {
     // Scripts without a sourceMappingURL (Bun cpuprofile .ts paths, unbundled dev servers) map to their own URL.
-    if (!url || url.startsWith('data:')) return {};
+    // node_modules scripts are dropped anyway; don't fetch their maps.
+    if (!url || url.startsWith('data:') || /[\\/]node_modules[\\/]/.test(url)) return {};
     let source: string | undefined;
     try {
       source = await getSource();
@@ -67,7 +70,7 @@ export class ScriptMapper {
     if (!ref && /^https?:/.test(url)) ref = await headerSourceMap(url);
     if (!ref) return info;
     try {
-      info.map = await loadSourceMap(url, ref);
+      info.map = await loadSourceMap(isAbsolute(url) ? pathToFileURL(url).href : url, ref);
     } catch (err) {
       this.warnings.push(`source map for ${url}: ${(err as Error).message}`);
     }

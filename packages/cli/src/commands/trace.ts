@@ -86,6 +86,7 @@ function reportDropped(dropped: number, urls: Map<string, number>, log: (s: stri
   if (!dropped) return;
   const byPrefix = new Map<string, number>();
   for (const [u, n] of urls) {
+    if (!n) continue;
     const nm = /^(.*?\/node_modules\/(?:@[^/]+\/)?[^/]+)/.exec(u);
     const key = nm ? nm[1]! : u.length > 100 ? u.slice(0, 100) + '…' : u;
     byPrefix.set(key, (byPrefix.get(key) ?? 0) + n);
