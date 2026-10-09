@@ -628,7 +628,7 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions =
     el: container,
     render(next, prebuilt) {
       snap = next;
-      model = prebuilt ?? buildGraphModel(next);
+      model = prebuilt ?? buildGraphModel(next, { allFiles: boxes });
       if (boxes) {
         filesByPath = new Map(next.files.map((f) => [f.path, f]));
         scale = colorScale(next.files, colorMode);
@@ -639,7 +639,8 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions =
       cy.elements().remove();
       visible = null; // so the summary never shows the previous snapshot's counts
       tip.hidden = true;
-      const hasEdges = model.edges.length > 0;
+      // The map shows every file, so it has something to draw even without edges.
+      const hasEdges = model.edges.length > 0 || (boxes && model.nodes.size > 0);
       empty.hidden = hasEdges;
       cyBox.hidden = !hasEdges;
       side.hidden = !hasEdges;

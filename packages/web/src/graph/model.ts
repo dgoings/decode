@@ -99,7 +99,15 @@ const dirname = (p: string) => (p.includes('/') ? p.slice(0, p.lastIndexOf('/'))
 /** True for nodes whose id is an opaque module id rather than a path (packages, namespaces, crates). */
 export const isOpaqueKind = (kind: string): boolean => kind !== 'file' && kind !== 'dir';
 
-export function buildGraphModel(snap: Snapshot): GraphModel {
+export interface GraphModelOptions {
+  /**
+   * Also add every file with size info (`code` or `loc`, the treemap's rule) as a leaf under its
+   * directory groups, edges or not (map view). Files owned by an opaque module stay inside it.
+   */
+  allFiles?: boolean;
+}
+
+export function buildGraphModel(snap: Snapshot, opts: GraphModelOptions = {}): GraphModel {
   const nodes = new Map<string, GraphNode>();
   const children = new Map<string, string[]>();
   const filesByPath = new Map<string, FileEntry>(snap.files.map((f) => [f.path, f]));
@@ -188,6 +196,12 @@ export function buildGraphModel(snap: Snapshot): GraphModel {
   };
 
   for (const m of dirModules) for (const f of m.files) ensureLeaf(f);
+  if (opts.allFiles) {
+    const inOpaque = new Set([...opaque.values()].flatMap((m) => m.files));
+    for (const f of snap.files) {
+      if ((f.code !== undefined || f.loc !== undefined) && !inOpaque.has(f.path)) ensureLeaf(f.path);
+    }
+  }
 
   const out: GraphEdge[] = [];
   const seen = new Set<string>();
