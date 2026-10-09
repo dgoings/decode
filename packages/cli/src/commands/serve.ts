@@ -3,11 +3,14 @@ import type * as http from 'node:http';
 import { DEFAULT_SINCE, parseSince } from '@codeviz/analyzers';
 import type { Snapshot } from '@codeviz/core';
 import { analyzeRef } from '../analyze.ts';
-import { listSnapshots } from '../cache.ts';
+import { listSnapshots, readSnapshot } from '../cache.ts';
+import { loadOverlays, reportUnmatched, type Overlay } from '../overlay.ts';
+import { resolveRef } from '../refs.ts';
 import { repoId, repoName } from '../repo.ts';
 import { type CodevizServer, createServer, HOST } from '../server.ts';
+import { version } from '../version.ts';
 
-export const serveUsage = 'codeviz serve [--port <n>] [--since <90d|6m|1y|YYYY-MM-DD>] [--open] [--no-analyze]';
+export const serveUsage = 'codeviz serve [--port <n>] [--since <90d|6m|1y|YYYY-MM-DD>] [--open] [--no-analyze] [--overlay <file>]...';
 
 function listen(server: http.Server, port: number): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -47,10 +50,16 @@ export async function serveCommand(args: string[]): Promise<number> {
   let since = DEFAULT_SINCE;
   let open = false;
   let analyze = true;
+  const overlayFiles: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
     if (a === '--open') open = true;
     else if (a === '--no-analyze') analyze = false;
+    else if (a === '--overlay' || a.startsWith('--overlay=')) {
+      const v = a === '--overlay' ? args[++i] : a.slice('--overlay='.length);
+      if (!v) return fail('--overlay needs a file');
+      overlayFiles.push(v);
+    }
     else if (a === '--port' || a.startsWith('--port=')) {
       const v = a === '--port' ? args[++i] : a.slice('--port='.length);
       port = Number(v);
@@ -78,18 +87,36 @@ export async function serveCommand(args: string[]): Promise<number> {
     return fail('not inside a git repository');
   }
 
+  let overlays: Overlay[];
+  try {
+    overlays = loadOverlays(overlayFiles, root);
+  } catch (err) {
+    return fail((err as Error).message);
+  }
+
   const log = (s: string) => console.error(s);
+  let head: Snapshot | null = null;
   if (analyze) {
     try {
       const t0 = Date.now();
-      const { cached } = await analyzeRef(root, 'HEAD', { since, log });
+      const { cached, snapshot } = await analyzeRef(root, 'HEAD', { since, log });
+      head = snapshot;
       log(`analyzed HEAD ${cached ? '(cached)' : `in ${Date.now() - t0}ms`}`);
     } catch (err) {
       log(`warning: could not analyze HEAD: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
+  if (overlays.length) {
+    try {
+      head ??= readSnapshot(repoId(root), resolveRef(root, 'HEAD').sha, version);
+    } catch {
+      // no HEAD commit
+    }
+    if (head) reportUnmatched(overlays, head.files.map((f) => f.path), log);
+    else log('note: HEAD is not analyzed, so overlay paths were not checked against its files');
+  }
 
-  const started = await startServer({ root, since, port, log });
+  const started = await startServer({ root, since, port, log, overlays });
   if (typeof started === 'string') return fail(started);
   console.log(`codeviz serve: ${started.url}  (repo ${repoName(root)}, ${listSnapshots(repoId(root)).length} snapshots cached)`);
   if (open) openBrowser(started.url);
@@ -103,9 +130,10 @@ export async function startServer(opts: {
   port: number;
   log: (s: string) => void;
   worktree?: Snapshot | null;
+  overlays?: Overlay[];
 }): Promise<{ server: CodevizServer; url: string } | string> {
   const { port } = opts;
-  const server = createServer({ root: opts.root, since: opts.since, log: opts.log, worktree: opts.worktree });
+  const server = createServer({ root: opts.root, since: opts.since, log: opts.log, worktree: opts.worktree, overlays: opts.overlays });
   let bound: number | undefined;
   for (let attempt = 0; attempt < 10 && bound === undefined; attempt++) {
     try {
