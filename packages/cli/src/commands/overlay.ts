@@ -38,7 +38,7 @@ export async function overlayCommand(args: string[]): Promise<number> {
   } catch (err) {
     return fail(`cannot read ${input}: ${(err as Error).message}`);
   }
-  const overlay = lcovToOverlay(text, path.resolve(root), process.cwd());
+  const overlay = lcovToOverlay(text, path.resolve(root), path.resolve(root));
   const json = JSON.stringify(overlay, null, 2) + '\n';
   if (out) {
     writeFileSync(out, json);
