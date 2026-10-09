@@ -123,12 +123,14 @@ export function untilSigint(server: CodevizServer): Promise<number> {
   return new Promise<number>((resolve) => {
     let stopping = false;
     process.on('SIGINT', () => {
-      if (stopping) return; // a pending analysis' own SIGINT handler cleans up its temp worktree
+      if (stopping) return;
       stopping = true;
       console.error('codeviz: shutting down');
       server.close();
       server.closeAllConnections?.();
-      // Never exit mid-analysis: withCheckout must get to remove its temporary git worktree.
+      // Never exit mid-analysis: each analysis child must get to remove its temporary git worktree.
+      // Forward the signal (a terminal Ctrl-C already reaches the children; a `kill -INT` does not).
+      server.interrupt();
       const cap = new Promise<void>((r) => setTimeout(r, 15_000).unref());
       void Promise.race([server.idle(), cap]).then(() => {
         resolve(0);
