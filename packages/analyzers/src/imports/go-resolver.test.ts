@@ -20,7 +20,9 @@ import (
 func main() { fmt.Println(a.A(), bar.X) }
 `,
   'internal/a/a.go': 'package a\n\nimport "example.com/x/internal/b"\n\nfunc A() int { return b.B() }\n',
-  'internal/a/a_test.go': 'package a_test\n\nimport (\n\t"testing"\n\t"example.com/x/internal/a"\n)\n\nfunc TestA(t *testing.T) { _ = a.A() }\n',
+  'internal/a/a_test.go': 'package a_test\n\nimport (\n\t"testing"\n\t"example.com/x/internal/a"\n\t_ "example.com/x/cmd/app"\n)\n\nfunc TestA(t *testing.T) { _ = a.A() }\n',
+  // Internal test file: stays in package a.
+  'internal/a/internal_test.go': 'package a\n\nimport "testing"\n\nfunc TestInternal(t *testing.T) {}\n',
   'internal/b/b.go': 'package b\n\nfunc B() int { return 1 }\n',
 };
 
@@ -49,12 +51,18 @@ test('go resolver and package graph: intra-module, stdlib, third-party', async (
   expect(snap.languages).toEqual({ go: 'baseline' });
   expect(snap.modules).toEqual([
     { id: 'example.com/x/cmd/app', kind: 'package', files: ['cmd/app/main.go'] },
-    { id: 'example.com/x/internal/a', kind: 'package', files: ['internal/a/a.go', 'internal/a/a_test.go'] },
+    { id: 'example.com/x/internal/a', kind: 'package', files: ['internal/a/a.go', 'internal/a/internal_test.go'] },
+    { id: 'example.com/x/internal/a_test', kind: 'package', files: ['internal/a/a_test.go'] },
     { id: 'example.com/x/internal/b', kind: 'package', files: ['internal/b/b.go'] },
   ]);
   expect(snap.edges).toEqual([
     { from: 'example.com/x/cmd/app', to: 'example.com/x/internal/a', kind: 'import', level: 'module' },
     { from: 'example.com/x/internal/a', to: 'example.com/x/internal/b', kind: 'import', level: 'module' },
+    { from: 'example.com/x/internal/a_test', to: 'example.com/x/internal/a', kind: 'import', level: 'module' },
+    { from: 'example.com/x/internal/a_test', to: 'example.com/x/cmd/app', kind: 'import', level: 'module' },
   ]);
+  // a_test -> cmd/app -> a would be a cycle if a_test were folded into a.
+  const pairs = new Set(snap.edges!.map((e) => `${e.from} ${e.to}`));
+  expect(snap.edges!.filter((e) => pairs.has(`${e.to} ${e.from}`))).toEqual([]);
   expect(logs).toEqual([]);
 });

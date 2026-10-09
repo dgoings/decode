@@ -56,12 +56,20 @@ export function buildFileGraph(raw: RawImport[], resolver: Resolver, files: stri
  * whose id is its import path; imports become one module-level edge per distinct
  * package pair. Self-imports (incl. external `_test` packages) are skipped and no
  * file-level edges are emitted. Files outside every module use their directory as id.
+ * Files for which `externalTest(f)` is true (`package x_test`) form their own
+ * `<importPath>_test` package, as Go treats them.
  */
-export function buildPackageGraph(raw: RawImport[], resolver: GoResolver, files: string[]): FileGraph {
+export function buildPackageGraph(
+  raw: RawImport[],
+  resolver: GoResolver,
+  files: string[],
+  opts: { externalTest?: (file: string) => boolean } = {},
+): FileGraph {
   const pkgOf = new Map<string, string>();
   const byPkg = new Map<string, string[]>();
   for (const f of files) {
-    const id = resolver.packageOf(f) ?? posix.dirname(f);
+    const base = resolver.packageOf(f) ?? posix.dirname(f);
+    const id = opts.externalTest?.(f) ? `${base}_test` : base;
     pkgOf.set(f, id);
     let list = byPkg.get(id);
     if (!list) byPkg.set(id, (list = []));
