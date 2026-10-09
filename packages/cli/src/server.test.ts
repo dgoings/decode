@@ -72,3 +72,20 @@ test('analyze, list and fetch snapshots over HTTP', async () => {
   expect((await wt.json()).sha).toBe('WORKTREE');
   expect((await (await fetch(`${base}/api/snapshots`)).json()).worktree).not.toBeNull();
 }, 30_000);
+
+test('analysis runs off the event loop: reads stay responsive and a duplicate POST gets 409', async () => {
+  fs.writeFileSync(path.join(repo, 'b.ts'), 'export const b = 1;\n');
+  const first = post('WORKTREE');
+  await new Promise((r) => setTimeout(r, 30)); // let the server register the first request
+  const t0 = performance.now();
+  const list = await fetch(`${base}/api/snapshots`);
+  const listMs = performance.now() - t0;
+  const dup = await post('WORKTREE'); // still in flight after the read returned
+  // The bound is loose because the analysis child competes for CPU; the real-run check uses 50ms.
+  expect({ list: list.status, fast: listMs < 250, dup: dup.status, first: (await first).status }).toEqual({
+    list: 200,
+    fast: true,
+    dup: 409,
+    first: 200,
+  });
+}, 30_000);

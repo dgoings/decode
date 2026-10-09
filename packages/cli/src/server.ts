@@ -1,15 +1,15 @@
-import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { execFile, execFileSync } from 'node:child_process';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import * as http from 'node:http';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gunzipSync, gzipSync } from 'node:zlib';
-import { encodeSnapshot, type Snapshot } from '@codeviz/core';
-import { analyzeRef } from './analyze.ts';
-import { cacheDir, listSnapshots } from './cache.ts';
+import { decodeSnapshot, encodeSnapshot, type Snapshot } from '@codeviz/core';
+import { cacheDir, type SnapshotSummary } from './cache.ts';
 import { compareRefs } from './compare.ts';
 import { resolveRef } from './refs.ts';
 import { repoId, repoName } from './repo.ts';
+import { analyzeInChild, type ChildAnalysis } from './worker.ts';
 
 export interface ServerOptions {
   root: string;
@@ -51,9 +51,18 @@ function git(cwd: string, args: string[]): string {
   return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 }
 
-function listRefs(root: string): { name: string; sha: string; kind: 'branch' | 'tag' }[] {
+/** Async git, so the two calls behind GET /api/snapshots run in parallel and off the event loop. */
+function gitAsync(cwd: string, args: string[]): Promise<string> {
+  return new Promise((resolve, reject) =>
+    execFile('git', args, { cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }, (err, out) =>
+      err ? reject(err) : resolve(out.trim()),
+    ),
+  );
+}
+
+async function listRefs(root: string): Promise<{ name: string; sha: string; kind: 'branch' | 'tag' }[]> {
   // %(*objectname) is the peeled commit for annotated tags.
-  const out = git(root, [
+  const out = await gitAsync(root, [
     'for-each-ref',
     '--format=%(refname:short) %(objectname) %(*objectname) %(refname)',
     'refs/heads',
@@ -99,6 +108,8 @@ function readBody(req: http.IncomingMessage): Promise<string> {
 export type CodevizServer = http.Server & {
   /** Resolves once no analysis is in flight (so temp worktrees have been cleaned up). */
   idle(): Promise<void>;
+  /** Send SIGINT to every running analysis child so each removes its temp worktree and exits. */
+  interrupt(): void;
 };
 
 export function createServer(opts: ServerOptions): CodevizServer {
@@ -108,7 +119,47 @@ export function createServer(opts: ServerOptions): CodevizServer {
   const name = repoName(root);
   const webDir = findWebDir();
   let worktree: Snapshot | null = opts.worktree ?? null;
-  const inFlight = new Set<string>();
+  /**
+   * Like cache.listSnapshots, but each file is decoded only once per (mtime, size): decoding every
+   * cached snapshot on each GET /api/snapshots costs tens of ms with a dozen snapshots cached.
+   */
+  const summaries = new Map<string, { key: string; summary: SnapshotSummary | null }>();
+  function listSnapshots(): SnapshotSummary[] {
+    const dir = cacheDir(id);
+    let names: string[];
+    try {
+      names = readdirSync(dir).filter((n) => n.endsWith('.json.gz'));
+    } catch {
+      return [];
+    }
+    for (const n of summaries.keys()) if (!names.includes(n)) summaries.delete(n);
+    const out: SnapshotSummary[] = [];
+    for (const n of names) {
+      let entry = summaries.get(n);
+      try {
+        const st = statSync(path.join(dir, n));
+        const key = `${st.mtimeMs}:${st.size}`;
+        if (entry?.key !== key) {
+          let summary: SnapshotSummary | null = null;
+          try {
+            const s = decodeSnapshot(readFileSync(path.join(dir, n)));
+            summary = { sha: s.sha, ref: s.ref, analyzedAt: s.analyzedAt, toolVersion: s.toolVersion, languages: s.languages };
+          } catch {
+            // corrupt or half-written: skipped until it changes
+          }
+          entry = { key, summary };
+          summaries.set(n, entry);
+        }
+      } catch {
+        continue; // removed meanwhile
+      }
+      if (entry.summary) out.push(entry.summary);
+    }
+    return out;
+  }
+
+  /** Running analysis children by ref; one per ref, shared by /api/analyze and /api/compare. */
+  const inFlight = new Map<string, ChildAnalysis>();
   const running = new Set<Promise<unknown>>();
 
   /** Register work that may hold a temp worktree so `idle()` (and SIGINT shutdown) waits for it. */
@@ -121,6 +172,23 @@ export function createServer(opts: ServerOptions): CodevizServer {
     return job;
   }
 
+  /** Analyze `ref` in a child process (off this event loop), joining a run already in flight for it. */
+  function analyze(ref: string, force = false): Promise<{ snapshot: Snapshot; cached: boolean }> {
+    const existing = inFlight.get(ref);
+    if (existing) return existing.result;
+    const job = analyzeInChild(root, ref, { since: opts.since, force, log });
+    inFlight.set(ref, job);
+    const done = job.result.then((r) => {
+      if (r.snapshot.sha === 'WORKTREE') worktree = r.snapshot;
+      return r;
+    });
+    done.then(
+      () => inFlight.delete(ref),
+      () => inFlight.delete(ref),
+    );
+    return track(done);
+  }
+
   async function handleAnalyze(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     let body: { ref?: unknown; force?: unknown };
     try {
@@ -131,15 +199,16 @@ export function createServer(opts: ServerOptions): CodevizServer {
     const ref = body.ref;
     if (typeof ref !== 'string' || ref === '') return sendJson(res, 400, { error: 'ref is required' });
     if (inFlight.has(ref)) return sendJson(res, 409, { error: 'in progress' });
-    inFlight.add(ref);
     try {
-      const { snapshot, cached } = await track(analyzeRef(root, ref, { since: opts.since, log, force: body.force === true }));
-      if (snapshot.sha === 'WORKTREE') worktree = snapshot;
+      resolveRef(root, ref);
+    } catch (err) {
+      return sendJson(res, 400, { error: err instanceof Error ? err.message : String(err) });
+    }
+    try {
+      const { snapshot, cached } = await analyze(ref, body.force === true);
       sendJson(res, 200, { sha: snapshot.sha, ref, cached });
     } catch (err) {
-      sendJson(res, 400, { error: err instanceof Error ? err.message : String(err) });
-    } finally {
-      inFlight.delete(ref);
+      sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) });
     }
   }
 
@@ -155,12 +224,13 @@ export function createServer(opts: ServerOptions): CodevizServer {
       return sendJson(res, 400, { error: err instanceof Error ? err.message : String(err) });
     }
     try {
-      const diff = await track(
-        (async () => {
-          if (head === 'WORKTREE' && !worktree) worktree = (await analyzeRef(root, 'WORKTREE', { since: opts.since, log })).snapshot;
-          return compareRefs(root, base, head, { since: opts.since, log, worktree });
-        })(),
-      );
+      // Analyze both sides in children first so compareRefs only reads cache hits (and the in-memory WORKTREE).
+      await Promise.all([analyze(base), head === 'WORKTREE' && worktree ? null : analyze(head)]);
+    } catch (err) {
+      return sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) });
+    }
+    try {
+      const diff = await track(compareRefs(root, base, head, { since: opts.since, log, worktree }));
       sendGzippedJson(req, res, gzipSync(JSON.stringify(diff)));
     } catch (err) {
       sendJson(res, 400, { error: err instanceof Error ? err.message : String(err) });
@@ -213,12 +283,13 @@ export function createServer(opts: ServerOptions): CodevizServer {
     const method = req.method ?? 'GET';
 
     if (p === '/api/snapshots' && method === 'GET') {
+      const [head, refs] = await Promise.all([gitAsync(root, ['rev-parse', 'HEAD']), listRefs(root)]);
       return sendJson(res, 200, {
         repo: name,
         repoId: id,
-        head: git(root, ['rev-parse', 'HEAD']),
-        snapshots: listSnapshots(id),
-        refs: listRefs(root),
+        head,
+        snapshots: listSnapshots(),
+        refs,
         worktree: worktree ? { analyzedAt: worktree.analyzedAt } : null,
       });
     }
@@ -242,6 +313,9 @@ export function createServer(opts: ServerOptions): CodevizServer {
   return Object.assign(server, {
     idle: async () => {
       while (running.size > 0) await Promise.allSettled([...running]);
+    },
+    interrupt: () => {
+      for (const { child } of inFlight.values()) if (child.exitCode === null && child.signalCode === null) child.kill('SIGINT');
     },
   });
 }
