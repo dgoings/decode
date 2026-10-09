@@ -29,16 +29,31 @@ export interface GraphView {
   setChangedOnly(on: boolean): void;
   /** Re-measure the container (after it was hidden or resized); `fit` also fits the view. */
   resize(fit: boolean): void;
-  /** Recolor file boxes (or file dots, when created with a colorMode) by complexity, churn or an overlay. */
-  setColorMode(mode: ColorMode): void;
+  /** Recolor file boxes (or file dots, when created with a colorMode); `force` recolors an unchanged mode (overlay data changed). */
+  setColorMode(mode: ColorMode, force?: boolean): void;
   /** Hide or show all edges without moving any node. */
   setShowEdges(on: boolean): void;
+  /** For overlays (the trace player). Edges with class `rt` are theirs, and they are left out of layout. */
+  readonly cy: Core;
+  model(): GraphModel | null;
+  visible(): VisibleGraph | null;
+  /** Called after the drawn elements were rebuilt (render, expand/collapse); returns an unsubscribe. */
+  onElements(fn: () => void): () => void;
+  /** False while edges are hidden (map view's Show edges). */
+  edgesShown(): boolean;
+  /** The element that holds the Cytoscape canvas (an overlay canvas can be stacked on it). */
+  readonly stage: HTMLElement;
+  /** Extra tooltip rows for a node id or an edge (from/to are visible node ids). */
+  setTipExtra(fn: ((id: string, edge?: { from: string; to: string }) => Array<[string, string]>) | null): void;
   destroy(): void;
 }
 
 // GitHub diff colors.
 const ADDED = '#1f883d';
 const REMOVED = '#cf222e';
+/** Trace player: executed nodes and import edges carrying calls; runtime edges with no import edge. */
+const HOT = '#f97316';
+const RUNTIME = '#7c3aed';
 
 const fmt = (n: number) => n.toLocaleString();
 const basename = (p: string) => p.slice(p.lastIndexOf('/') + 1) || p;
@@ -177,6 +192,31 @@ const STYLE: cytoscape.StylesheetJson = [
   { selector: 'node:selected', style: { 'border-width': 3, 'border-color': '#2f6fdb' } },
   { selector: 'edge:selected', style: { 'line-color': '#2f6fdb', 'target-arrow-color': '#2f6fdb' } },
   { selector: 'edge.edges-off', style: { display: 'none' } },
+  // Trace player summary (trace/layer.ts): lit nodes get an underlay-opacity bypass, so the underlay
+  // is always there at opacity 0. Playback draws on an overlay canvas instead and never restyles.
+  {
+    selector: 'node',
+    style: { 'underlay-color': HOT, 'underlay-opacity': 0, 'underlay-padding': 6, 'underlay-shape': 'ellipse' },
+  },
+  { selector: 'edge.tr-called', style: { 'line-style': 'solid' } },
+  { selector: 'edge.tr-uncalled', style: { opacity: 0.18 } },
+  {
+    selector: 'edge.rt',
+    style: {
+      display: 'none',
+      'line-color': RUNTIME,
+      'target-arrow-color': RUNTIME,
+      'line-style': 'dashed',
+      'line-dash-pattern': [4, 4],
+      'curve-style': 'unbundled-bezier',
+      'control-point-distances': [40],
+      'control-point-weights': [0.5],
+      width: 2,
+      opacity: 1,
+      'z-index': 31,
+    },
+  },
+  { selector: 'edge.rt.edges-off', style: { display: 'none' } },
 ];
 
 /** Boxes mode (map view): files and collapsed folders as sized, colored rectangles with the label inside. */
@@ -202,6 +242,7 @@ const BOX_STYLE: cytoscape.StylesheetJson = [
   },
   { selector: 'node[?box][type = "group"]', style: { 'border-color': '#9aa1ab', 'font-size': 13 } },
   { selector: 'node[?box]:selected', style: { 'border-width': 3, 'border-color': '#2f6fdb' } },
+  { selector: 'node[?box]', style: { 'underlay-shape': 'round-rectangle' } },
 ];
 
 /** Neutral grey for files without the active metric (the treemap's hatched n/a fill does not exist here). */
@@ -277,6 +318,11 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions =
   let showEdges = opts.showEdges ?? true;
   let scale: ColorScale | null = null;
   let filesByPath = new Map<string, FileEntry>();
+  const elementListeners = new Set<() => void>();
+  let tipExtra: ((id: string, edge?: { from: string; to: string }) => Array<[string, string]>) | null = null;
+  const notifyElements = () => {
+    for (const fn of elementListeners) fn();
+  };
 
   function nodeData(n: VisibleGraph['nodes'][number]): Record<string, unknown> {
     const group = n.type === 'group';
@@ -315,7 +361,7 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions =
     const t = performance.now();
     const incremental = fixed.length > 0;
     cy.elements()
-      .not('.unchanged-hidden, .edges-off')
+      .not('.unchanged-hidden, .edges-off, .rt')
       .layout({
         name: 'fcose',
         animate: false,
@@ -393,6 +439,7 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions =
     syncEmpty();
     if (counts) counts.textContent = summaryText();
     if (toggleAll) toggleAll.textContent = collapsed.size > 0 ? 'Expand all' : 'Collapse all';
+    notifyElements();
   }
 
   /** Changed only: keep changed edges, their endpoints, and compounds holding a kept node. */
@@ -433,7 +480,7 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions =
   function summaryText(): string {
     if (!model) return '';
     const level = model.edges.some((e) => e.level === 'module') ? 'dependency' : 'import';
-    const shown = cy.edges().not('.unchanged-hidden').length;
+    const shown = cy.edges().not('.unchanged-hidden, .rt').length;
     return `${fmt(cy.nodes().not('.unchanged-hidden').length)} nodes shown · ${fmt(model.edges.length)} ${level} edges (${fmt(shown)} shown) · ${cycles.components.length} cycle${cycles.components.length === 1 ? '' : 's'}`;
   }
 
@@ -602,11 +649,17 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions =
     if (n.ghost) rows.unshift(['Status', 'removed (base only)']);
     const c = crossing(n.id);
     rows.push(['Imports', `${fmt(c.out)} out / ${fmt(c.in)} in`]);
+    if (tipExtra) rows.push(...tipExtra(n.id));
     const title = n.type === 'group' && !n.id.endsWith('/') ? `${n.id}/` : n.id;
     showTip({ title, rows }, e.renderedPosition);
   });
   cy.on('mouseover', 'edge', (e) => {
     const el = e.target as EdgeSingular;
+    const ends = { from: el.source().id(), to: el.target().id() };
+    if (el.hasClass('rt')) {
+      showTip({ title: `${ends.from} → ${ends.to}`, rows: [['Import edge', 'none (runtime only)'], ...(tipExtra?.(el.id(), ends) ?? [])] }, e.renderedPosition);
+      return;
+    }
     const count = el.data('count') as number;
     const inCycle = el.data('cycleCount') as number;
     const added = (el.data('added') as number) ?? 0;
@@ -616,6 +669,7 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions =
     ];
     if (el.data('level') === 'module') rows.push(['Level', 'module']);
     if (inCycle) rows.push(['In cycles', fmt(inCycle)]);
+    if (tipExtra) rows.push(...tipExtra(el.id(), ends));
     showTip({ title: `${el.source().id()} → ${el.target().id()}`, rows }, e.renderedPosition);
   });
   cy.on('mouseout', () => (tip.hidden = true));
@@ -657,6 +711,7 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions =
       renderBar();
       if (!hasEdges) {
         empty.textContent = 'No dependency edges in this snapshot.';
+        notifyElements();
         return;
       }
       cy.resize();
@@ -665,6 +720,18 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions =
       fitVisible();
       container.dataset.layoutMs = ms.toFixed(0);
       renderSide();
+    },
+    cy,
+    stage,
+    edgesShown: () => showEdges,
+    model: () => model,
+    visible: () => visible,
+    onElements(fn) {
+      elementListeners.add(fn);
+      return () => elementListeners.delete(fn);
+    },
+    setTipExtra(fn) {
+      tipExtra = fn;
     },
     setChangedOnly(on) {
       if (on === changedOnly) return;
@@ -679,8 +746,8 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions =
       cy.resize();
       if (fit) fitVisible();
     },
-    setColorMode(mode) {
-      if (mode === colorMode) return;
+    setColorMode(mode, force = false) {
+      if (mode === colorMode && !force) return;
       colorMode = mode;
       if (!colored || !snap) return;
       scale = colorScale(snap.files, colorMode);
@@ -698,6 +765,7 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions =
       tip.hidden = true;
       if (on) cy.edges().removeClass('edges-off');
       else cy.edges().addClass('edges-off');
+      notifyElements();
     },
     destroy() {
       ro.disconnect();

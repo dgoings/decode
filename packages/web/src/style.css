@@ -220,3 +220,30 @@ header .view-switch button { font-size: 13px; padding: 3px 14px; }
 .hidden-pop li { display: flex; align-items: center; gap: 8px; padding: 2px 0; }
 .hidden-pop li span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ctxmenu[hidden], .hidden-pop[hidden], .hidden-chip[hidden] { display: none; }
+
+/* Runtime trace strip (Graph and Map views). Colors match HOT / RUNTIME in graph/view.ts. */
+.trace-strip {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 12px;
+  padding: 4px 8px; border: 1px solid var(--line); border-radius: 4px; background: var(--panel);
+}
+.trace-strip[hidden] { display: none; }
+.trace-label { font-weight: 600; }
+.trace-strip select { font: inherit; font-size: 12px; }
+.trace-pick { max-width: 280px; }
+.trace-play { min-width: 76px; }
+.trace-scrub { flex: 1 1 160px; min-width: 120px; }
+.trace-time { font-variant-numeric: tabular-nums; min-width: 92px; }
+.trace-follow, .trace-decay { display: inline-flex; align-items: center; gap: 4px; }
+.trace-follow[hidden] { display: none; }
+.trace-decay input { width: 90px; }
+.trace-summary[aria-pressed='true'] { background: #fff1e6; border-color: #f97316; }
+.trace-warn { color: #8a5a00; background: #fdf6e6; border: 1px solid #e6c37a; border-radius: 3px; padding: 0 6px; }
+.trace-warn[hidden] { display: none; }
+.trace-legend { display: inline-flex; flex-wrap: wrap; gap: 4px 10px; color: var(--muted); }
+.trace-key { display: inline-flex; align-items: center; gap: 4px; }
+.trace-swatch { display: inline-block; width: 18px; height: 0; border-top: 3px solid; }
+.trace-swatch.node { width: 10px; height: 10px; border: 0; border-radius: 50%; background: #f97316; box-shadow: 0 0 0 3px rgb(249 115 22 / 0.35); }
+.trace-swatch.called { border-color: #f97316; }
+.trace-swatch.uncalled { border-color: #b8bec8; opacity: 0.5; }
+.trace-swatch.runtime { border-top-style: dashed; border-color: #7c3aed; }
+.trace-canvas { position: absolute; inset: 0; pointer-events: none; z-index: 0; }
