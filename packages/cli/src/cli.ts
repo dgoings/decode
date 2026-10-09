@@ -23,6 +23,7 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
   export: exportCommand,
   overlay: async (args) => (await import('./commands/overlay.ts')).overlayCommand(args),
   publish: publishCommand,
+  trace: (args) => import('./commands/trace.ts').then((m) => m.traceCommand(args)),
   help: async () => {
     console.log(usage);
     return 0;
