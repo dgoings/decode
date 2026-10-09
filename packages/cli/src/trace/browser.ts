@@ -1,5 +1,6 @@
 // `codeviz trace browser`: drive or attach to Chromium over CDP, poll precise coverage + sampling profiler per tick.
 import type { Browser, CDPSession, Page } from 'playwright';
+import { attachToPage, type CdpSession } from './cdp.ts';
 import { createTraceWriter, countsToTuples, edgesToTuples, type TraceHeader, type TraceTick } from './format.ts';
 import { bucketProfile, resolveProfileFrames, ScriptMapper, type CpuProfile } from './profile.ts';
 import type { RepoPaths } from './sourcemap.ts';
@@ -49,21 +50,39 @@ async function loadPlaywright(): Promise<PlaywrightModule> {
 }
 
 export async function traceBrowser(o: BrowserTraceOptions): Promise<BrowserTraceResult> {
-  const pw = await loadPlaywright();
-  let browser: Browser;
-  let page: Page;
+  let session: CdpSession;
+  let cleanup: () => Promise<void>;
+  let closed: Promise<void>;
+  let navigate: (() => Promise<unknown>) | undefined;
   if (o.attach !== undefined) {
-    browser = await pw.chromium.connectOverCDP(`http://127.0.0.1:${o.attach}`);
-    const pages = browser.contexts().flatMap((c) => c.pages());
-    const match = o.url ? pages.filter((p) => p.url().startsWith(o.url!)) : [];
-    page = match[0] ?? pages[pages.length - 1] ?? (await (browser.contexts()[0] ?? (await browser.newContext())).newPage());
-    o.log(`attached to ${page.url() || 'about:blank'} on port ${o.attach}`);
+    // Raw CDP: Playwright's connectOverCDP was observed to hang against Chrome for Testing 153.
+    const a = await attachToPage(o.attach, o.url);
+    session = a.session;
+    closed = a.session.closed;
+    cleanup = () => a.session.close();
+    o.log(`attached to ${a.url} on port ${o.attach}`);
   } else {
-    browser = await pw.chromium.launch({ headless: o.headless });
-    page = await (await browser.newContext()).newPage();
+    const pw = await loadPlaywright();
+    const browser: Browser = await pw.chromium.launch({ headless: o.headless });
+    const page: Page = await (await browser.newContext()).newPage();
+    const s: CDPSession = await page.context().newCDPSession(page);
+    session = {
+      send: (m, p) => s.send(m as never, p as never),
+      on: (e, fn) => void s.on(e as never, fn as never),
+      closed: new Promise<void>((r) => {
+        page.once('close', () => r());
+        browser.once('disconnected', () => r());
+      }),
+      close: async () => {
+        await s.detach().catch(() => {});
+        await browser.close().catch(() => {});
+      },
+    };
+    closed = session.closed;
+    cleanup = session.close;
+    if (o.url) navigate = () => page.goto(o.url!);
   }
 
-  const session: CDPSession = await page.context().newCDPSession(page);
   const mapRefs = new Map<string, string>();
   session.on('Debugger.scriptParsed', (e: { scriptId: string; sourceMapURL?: string }) => {
     if (e.sourceMapURL) mapRefs.set(e.scriptId, e.sourceMapURL);
@@ -106,9 +125,12 @@ export async function traceBrowser(o: BrowserTraceOptions): Promise<BrowserTrace
     stopped = true;
     wake();
   };
+  let isClosed = false;
   process.once('SIGINT', stop);
-  page.once('close', stop);
-  browser.once('disconnected', stop);
+  void closed.then(() => {
+    isClosed = true;
+    stop();
+  });
   if (o.durationS) setTimeout(stop, o.durationS * 1000).unref();
 
   const tick = async (): Promise<void> => {
@@ -138,7 +160,7 @@ export async function traceBrowser(o: BrowserTraceOptions): Promise<BrowserTrace
           continue;
         }
         files.set(path, (files.get(path) ?? 0) + r.count);
-        const k = `${path}\0${f.functionName || '(module)'}`;
+        const k = `${path}\0${f.functionName || (r.startOffset === 0 ? '(script)' : '(anonymous)')}`;
         fns.set(k, (fns.get(k) ?? 0) + r.count);
       }
     }
@@ -163,10 +185,10 @@ export async function traceBrowser(o: BrowserTraceOptions): Promise<BrowserTrace
     for (const [a, b] of rec.edges) result.edges.add(`${a} -> ${b}`);
   };
 
-  const navigation = o.attach === undefined && o.url ? page.goto(o.url).catch((err: Error) => {
+  const navigation = navigate?.().catch((err: Error) => {
     o.log(`navigation failed: ${err.message}`);
     stop();
-  }) : undefined;
+  });
 
   o.log(o.durationS ? `tracing for ${o.durationS}s (Ctrl-C to stop early)` : 'tracing; Ctrl-C or close the page to stop');
   let next = started + o.tickMs;
@@ -178,7 +200,7 @@ export async function traceBrowser(o: BrowserTraceOptions): Promise<BrowserTrace
       });
     }
     next += o.tickMs;
-    if (page.isClosed() || !browser.isConnected()) break;
+    if (isClosed) break;
     try {
       await tick(); // after stop() this is the final, partial tick
     } catch (err) {
@@ -189,12 +211,11 @@ export async function traceBrowser(o: BrowserTraceOptions): Promise<BrowserTrace
   await navigation;
   process.removeListener('SIGINT', stop);
   await writer.close();
-  try {
-    await session.send('Profiler.stopPreciseCoverage');
-    await session.detach();
-  } catch {
-    // page or browser already gone
+  if (!isClosed) {
+    await session.send('Profiler.stopPreciseCoverage').catch(() => {});
+    await session.send('Profiler.disable').catch(() => {});
+    await session.send('Debugger.disable').catch(() => {});
   }
-  await browser.close().catch(() => {});
+  await cleanup();
   return result;
 }
