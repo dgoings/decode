@@ -7,6 +7,7 @@ import { gunzipSync, gzipSync } from 'node:zlib';
 import { decodeSnapshot, encodeSnapshot, type Snapshot } from '@codeviz/core';
 import { cacheDir, type SnapshotSummary } from './cache.ts';
 import { compareRefs } from './compare.ts';
+import { summarize, type Overlay } from './overlay.ts';
 import { resolveRef } from './refs.ts';
 import { repoId, repoName } from './repo.ts';
 import { analyzeInChild, type ChildAnalysis } from './worker.ts';
@@ -17,6 +18,8 @@ export interface ServerOptions {
   log?: (s: string) => void;
   /** Seed the in-memory WORKTREE snapshot (e.g. from `codeviz compare HEAD WORKTREE --open`). */
   worktree?: Snapshot | null;
+  /** From `--overlay`: served at /api/overlays, never cached. */
+  overlays?: Overlay[];
 }
 
 const MIME: Record<string, string> = {
@@ -119,6 +122,8 @@ export function createServer(opts: ServerOptions): CodevizServer {
   const name = repoName(root);
   const webDir = findWebDir();
   let worktree: Snapshot | null = opts.worktree ?? null;
+  const overlays = opts.overlays ?? [];
+  const overlayGz = new Map(overlays.map((o) => [o.name, gzipSync(JSON.stringify(o))]));
   /**
    * Like cache.listSnapshots, but each file is decoded only once per (mtime, size): decoding every
    * cached snapshot on each GET /api/snapshots costs tens of ms with a dozen snapshots cached.
@@ -295,6 +300,12 @@ export function createServer(opts: ServerOptions): CodevizServer {
     }
     const m = /^\/api\/snapshots\/([^/]+)$/.exec(p);
     if (m && method === 'GET') return handleSnapshot(req, res, m[1]!);
+    if (p === '/api/overlays' && method === 'GET') return sendJson(res, 200, overlays.map(summarize));
+    const o = /^\/api\/overlays\/([^/]+)$/.exec(p);
+    if (o && method === 'GET') {
+      const gz = overlayGz.get(decodeURIComponent(o[1]!));
+      return gz ? sendGzippedJson(req, res, gz) : sendJson(res, 404, { error: 'no such overlay' });
+    }
     if (p === '/api/analyze' && method === 'POST') return handleAnalyze(req, res);
     if (p === '/api/compare' && method === 'GET') return handleCompare(req, res, url);
     if (p.startsWith('/api/')) return sendJson(res, 404, { error: 'not found' });

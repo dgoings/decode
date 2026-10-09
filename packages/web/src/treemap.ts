@@ -1,11 +1,47 @@
 import type { FileEntry } from '@codeviz/core';
 import { hierarchy, treemap, type HierarchyRectangularNode } from 'd3-hierarchy';
 import { scaleLinear, scaleSequential } from 'd3-scale';
-import { interpolateBlues, interpolateOranges } from 'd3-scale-chromatic';
-import type { Snapshot } from './data.ts';
+import { interpolateBlues, interpolateOranges, interpolateReds } from 'd3-scale-chromatic';
+import type { Overlay, Snapshot } from './data.ts';
 import type { HideTarget } from './hidden.ts';
 
-export type ColorMode = 'complexity' | 'churn';
+/** Built-in metrics, or `overlay:<name>` for an overlay loaded with setOverlays. */
+export type ColorMode = 'complexity' | 'churn' | `overlay:${string}`;
+
+/** Overlays by name, with values by path. Set once at startup (they do not change per snapshot). */
+const overlays = new Map<string, { meta: Overlay; values: Map<string, number> }>();
+
+export function setOverlays(list: Overlay[]): void {
+  overlays.clear();
+  for (const o of list) overlays.set(o.name, { meta: o, values: new Map(o.rows) });
+}
+
+/** Color modes in toggle order: built-ins, then one per overlay. */
+export function colorModes(): Array<[ColorMode, string]> {
+  return [['complexity', 'Complexity'], ['churn', 'Churn'], ...[...overlays.keys()].map((n): [ColorMode, string] => [`overlay:${n}`, n])];
+}
+
+/** `mode` when it names a built-in metric or a loaded overlay, else null. */
+export function parseColorMode(mode: string | null): ColorMode | null {
+  if (mode === 'complexity' || mode === 'churn') return mode;
+  return mode?.startsWith('overlay:') && overlays.has(mode.slice(8)) ? (mode as ColorMode) : null;
+}
+
+function overlayOf(mode: ColorMode) {
+  return mode.startsWith('overlay:') ? overlays.get(mode.slice(8)) : undefined;
+}
+
+function withUnit(v: number, unit: string): string {
+  return unit === '%' || unit === '' ? `${v}${unit}` : `${v} ${unit}`;
+}
+
+/** One tooltip row per loaded overlay: [name, "83.2%"] (or "n/a"). */
+export function overlayTipRows(path: string): Array<[string, string]> {
+  return [...overlays.values()].map(({ meta, values }) => {
+    const v = values.get(path);
+    return [meta.name, v === undefined ? 'n/a' : withUnit(v, meta.unit)];
+  });
+}
 
 /** Directory (has children) or file (has file + value) in the path tree. */
 export interface TreeNode {
@@ -54,12 +90,17 @@ export function buildHierarchy(files: FileEntry[], rootName = ''): TreeNode {
 }
 
 export function metric(f: FileEntry, mode: ColorMode): number | undefined {
-  return mode === 'complexity' ? f.complexity?.max : f.churn?.commits;
+  if (mode === 'complexity') return f.complexity?.max;
+  if (mode === 'churn') return f.churn?.commits;
+  return overlayOf(mode)?.values.get(f.path);
 }
 
 export interface ColorScale {
   mode: ColorMode;
-  /** [0, hi]: hi is the 95th percentile rounded up to a nice number; values above clamp. */
+  /**
+   * [0, hi]: hi is the 95th percentile rounded up to a nice number; values above clamp.
+   * Overlays use their own min/max when given (else 0 or the lowest value, and the same nice p95).
+   */
   domain: [number, number];
   /** Largest observed value (above hi when the scale clamps). */
   max: number;
@@ -74,22 +115,28 @@ export function colorScale(files: FileEntry[], mode: ColorMode): ColorScale {
     .map((f) => metric(f, mode))
     .filter((v): v is number => v !== undefined)
     .sort((a, b) => a - b);
+  const ov = overlayOf(mode)?.meta;
+  const lo = ov?.min ?? Math.min(0, vals[0] ?? 0);
   const p95 = vals.length ? vals[Math.floor(0.95 * (vals.length - 1))]! : 1;
-  const hi = Math.max(1, scaleLinear().domain([0, p95]).nice().domain()[1]!);
-  const interp = mode === 'complexity' ? interpolateBlues : interpolateOranges;
+  const hi = ov?.max ?? Math.max(lo + 1, scaleLinear().domain([lo, p95]).nice().domain()[1]!);
+  const interp = ov ? interpolateReds : mode === 'complexity' ? interpolateBlues : interpolateOranges;
+  // Bad is always the hot (dark) end: flip the ramp when a high value is good (coverage).
+  const flip = ov?.higherIsBetter === true;
   // Skip the near-white end so low values still read against the surface.
-  const seq = scaleSequential((t: number) => interp(0.12 + 0.83 * t))
-    .domain([0, hi])
+  const seq = scaleSequential((t: number) => interp(0.12 + 0.83 * (flip ? 1 - t : t)))
+    .domain([lo, hi])
     .clamp(true);
   return {
     mode,
-    domain: [0, hi],
+    domain: [lo, hi],
     max: vals.length ? vals[vals.length - 1]! : 0,
     color: (v) => (v === undefined ? NA_FILL : seq(v)),
   };
 }
 
 export function legendLabel(mode: ColorMode, snap: Snapshot): string {
+  const ov = overlayOf(mode)?.meta;
+  if (ov) return ov.unit ? `${ov.name} (${ov.unit})` : ov.name;
   return mode === 'complexity' ? 'Max complexity per file' : `Commits (last ${snap.since ?? 'window'})`;
 }
 
@@ -104,11 +151,12 @@ export function createLegend(scale: ColorScale, label: string): HTMLElement {
   lo.textContent = String(scale.domain[0]);
   const bar = document.createElement('span');
   bar.className = 'legend-bar';
-  const stops = Array.from({ length: 9 }, (_, i) => scale.color((scale.domain[1] * i) / 8));
+  const [d0, d1] = scale.domain;
+  const stops = Array.from({ length: 9 }, (_, i) => scale.color(d0 + ((d1 - d0) * i) / 8));
   bar.style.background = `linear-gradient(to right, ${stops.join(', ')})`;
   const hi = document.createElement('span');
   hi.textContent = scale.max > scale.domain[1] ? `${scale.domain[1]}+` : String(scale.domain[1]);
-  if (scale.max > scale.domain[1]) hi.title = `Clamped at the 95th percentile; max is ${scale.max}`;
+  if (scale.max > scale.domain[1]) hi.title = `Higher values clamp; max is ${scale.max}`;
   const na = document.createElement('span');
   na.className = 'legend-na';
   const naLabel = document.createElement('span');
@@ -323,6 +371,7 @@ export function createTreemap(
       rows.push(['Lines', `${f.loc ?? 'n/a'} loc / ${f.code ?? 'n/a'} code / ${f.comments ?? 'n/a'} comments`]);
       rows.push(['Complexity', f.complexity ? `${f.complexity.sum} sum / ${f.complexity.max} max / ${f.complexity.functions} functions` : 'n/a']);
       rows.push(['Churn', f.churn ? `${f.churn.commits} commits / ${f.churn.authors} authors` : 'n/a']);
+      rows.push(...overlayTipRows(f.path));
     } else {
       rows.push(['Files', fmt(n.leaves().length)]);
       rows.push(['Code', `${fmt(n.value ?? 0)} lines`]);

@@ -6,6 +6,7 @@ import { diffSnapshots, encodeSnapshot, type Snapshot } from '@codeviz/core';
 import { analyzeRef } from './analyze.ts';
 import { listSnapshots, readSnapshot, type SnapshotSummary } from './cache.ts';
 import { compareRenames } from './compare.ts';
+import { loadOverlays, reportUnmatched, summarize } from './overlay.ts';
 import { resolveRef } from './refs.ts';
 import { redactOrigin, repoId, repoName } from './repo.ts';
 import { findWebDir } from './server.ts';
@@ -28,6 +29,8 @@ export interface ExportOptions {
   overwrite?: boolean;
   /** Built web UI to copy (default: the same lookup `codeviz serve` uses). */
   webDir?: string;
+  /** Overlay files (JSON or CSV) to ship as extra color modes. */
+  overlays?: string[];
   log?: (s: string) => void;
 }
 
@@ -59,7 +62,8 @@ function dirBytes(dir: string): number {
 
 /**
  * Write a static codeviz site to `opts.dir`: the built web UI, snapshots/index.json,
- * snapshots/<sha>.json.gz per ref and snapshots/compare/<base>-<head>.json.gz per ordered pair.
+ * snapshots/<sha>.json.gz per ref, snapshots/compare/<base>-<head>.json.gz per ordered pair, and
+ * snapshots/overlays/index.json plus <name>.json.gz per overlay.
  * Throws (before writing anything) on WORKTREE, unknown refs, a non-empty dir or a missing web build.
  */
 export async function exportSite(opts: ExportOptions): Promise<ExportResult> {
@@ -82,6 +86,7 @@ export async function exportSite(opts: ExportOptions): Promise<ExportResult> {
     }
   }
   if (unknown.length) throw new Error(`unknown git ref${unknown.length > 1 ? 's' : ''}: ${unknown.join(', ')}`);
+  const overlays = loadOverlays(opts.overlays ?? [], root);
 
   const webDirFound = opts.webDir ?? findWebDir();
   if (!webDirFound || !existsSync(path.join(webDirFound, 'index.html'))) {
@@ -158,6 +163,14 @@ export async function exportSite(opts: ExportOptions): Promise<ExportResult> {
   for (const { snapshot } of picked) {
     const clean = { ...snapshot, origin: redactOrigin(snapshot.origin) };
     writeFileSync(path.join(snapDir, `${snapshot.sha}.json.gz`), encodeSnapshot(clean));
+  }
+
+  if (overlays.length) {
+    reportUnmatched(overlays, picked[0]!.snapshot.files.map((f) => f.path), log);
+    const ovDir = path.join(snapDir, 'overlays');
+    mkdirSync(ovDir, { recursive: true });
+    writeFileSync(path.join(ovDir, 'index.json'), JSON.stringify(overlays.map(summarize), null, 2) + '\n');
+    for (const o of overlays) writeFileSync(path.join(ovDir, `${o.name}.json.gz`), gzipSync(JSON.stringify(o)));
   }
 
   let pairs = 0;

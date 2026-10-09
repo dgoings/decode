@@ -21,6 +21,7 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
   compare: compareCommand,
   serve: serveCommand,
   export: exportCommand,
+  overlay: async (args) => (await import('./commands/overlay.ts')).overlayCommand(args),
   publish: publishCommand,
   help: async () => {
     console.log(usage);

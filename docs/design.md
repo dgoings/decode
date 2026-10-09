@@ -116,6 +116,25 @@ of biggest changes). `serve` exposes `/api/snapshots`, `/api/snapshots/:sha`,
 `/api/compare`, `/api/analyze`. `export` builds the same UI reading static JSON;
 one code path, two data sources.
 
+### Overlays
+
+External per-file numbers (coverage, bundle bytes, error counts) attach as extra
+color modes without a feature per source. An overlay is JSON
+`{ "name": "coverage", "unit": "%", "higherIsBetter": true, "min": 0, "max": 100, "rows": [["src/a.ts", 83.2]] }`
+(only `rows` is required; `name` defaults to the file's basename) or CSV with a
+`path,value` header (named after the basename). `serve --overlay <file>` and
+`export --overlay <file>` (repeatable) load them; paths are normalized like walker
+paths (forward slashes, no leading `./`, absolute paths under the repo root made
+relative) and rows that match no file in HEAD (serve) or the first exported ref
+(export) are counted once on stderr. Overlays are inputs, never cached:
+`GET /api/overlays` lists `{name, unit, higherIsBetter, min, max, rows: n}`,
+`GET /api/overlays/:name` returns the overlay; export writes
+`snapshots/overlays/index.json` and `<name>.json.gz`. The UI adds one
+`overlay:<name>` mode per overlay (hash `mode=overlay:coverage`) to the treemap,
+graph and map; files without a value are neutral, and when `higherIsBetter` the
+red ramp is flipped so the bad end is always dark. `codeviz overlay lcov
+<lcov.info> [--out f] [--root dir]` is the reference converter (line coverage %).
+
 ## Repo layout
 
 ```

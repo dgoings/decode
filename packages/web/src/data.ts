@@ -29,6 +29,21 @@ export interface SnapshotIndex {
   worktree: { analyzedAt: string } | null;
 }
 
+/** Mirrors GET /api/overlays (and snapshots/overlays/index.json) entries. */
+export interface OverlaySummary {
+  name: string;
+  unit: string;
+  higherIsBetter: boolean;
+  min?: number;
+  max?: number;
+  rows: number;
+}
+
+/** External per-file values attached at serve/export time (`--overlay`). Paths are repo-relative. */
+export interface Overlay extends Omit<OverlaySummary, 'rows'> {
+  rows: [string, number][];
+}
+
 export interface DataSource {
   readonly kind: 'api' | 'static';
   index(): Promise<SnapshotIndex>;
@@ -36,6 +51,9 @@ export interface DataSource {
   analyze?(ref: string): Promise<{ sha: string }>;
   /** Diff two refs; blocks until both are analyzed. `head` may be WORKTREE. */
   compare?(base: string, head: string): Promise<SnapshotDiff>;
+  /** Overlays available as extra color modes; [] when there are none. */
+  overlays(): Promise<OverlaySummary[]>;
+  overlay(name: string): Promise<Overlay>;
 }
 
 async function getJson<T>(url: string, init?: RequestInit): Promise<T> {
@@ -85,6 +103,14 @@ export class ApiDataSource implements DataSource {
   compare(base: string, head: string): Promise<SnapshotDiff> {
     const q = new URLSearchParams({ base, head });
     return getJson(`${this.base}/compare?${q}`);
+  }
+
+  overlays(): Promise<OverlaySummary[]> {
+    return getJson(`${this.base}/overlays`);
+  }
+
+  overlay(name: string): Promise<Overlay> {
+    return getJson(`${this.base}/overlays/${encodeURIComponent(name)}`);
   }
 }
 
@@ -139,6 +165,17 @@ export class StaticDataSource implements DataSource {
       );
     }
     return diff;
+  }
+
+  /** `snapshots/overlays/index.json` from `codeviz export --overlay`; absent in exports without overlays. */
+  async overlays(): Promise<OverlaySummary[]> {
+    return (await getMaybeGzipJson<OverlaySummary[]>(`${this.base}/overlays/index.json`)) ?? [];
+  }
+
+  async overlay(name: string): Promise<Overlay> {
+    const n = encodeURIComponent(name);
+    const gz = await getMaybeGzipJson<Overlay>(`${this.base}/overlays/${n}.json.gz`);
+    return gz ?? getJson(`${this.base}/overlays/${n}.json`);
   }
 }
 

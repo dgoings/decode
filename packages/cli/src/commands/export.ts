@@ -2,7 +2,7 @@ import { DEFAULT_SINCE, parseSince } from '@codeviz/analyzers';
 import { exportSite, MAX_COMPARE_REFS } from '../export.ts';
 
 export const exportUsage =
-  'codeviz export <dir> [ref...] [--since <90d|6m|1y|YYYY-MM-DD>] [--force] [--overwrite] [--web-dir <path>]';
+  'codeviz export <dir> [ref...] [--since <90d|6m|1y|YYYY-MM-DD>] [--force] [--overwrite] [--web-dir <path>] [--overlay <file>]...';
 
 function size(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -16,6 +16,7 @@ export async function exportCommand(args: string[]): Promise<number> {
   let force = false;
   let overwrite = false;
   let webDir: string | undefined;
+  const overlays: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
     if (a === '--force') force = true;
@@ -28,6 +29,10 @@ export async function exportCommand(args: string[]): Promise<number> {
       const v = a === '--web-dir' ? args[++i] : a.slice('--web-dir='.length);
       if (!v) return fail('--web-dir needs a value');
       webDir = v;
+    } else if (a === '--overlay' || a.startsWith('--overlay=')) {
+      const v = a === '--overlay' ? args[++i] : a.slice('--overlay='.length);
+      if (!v) return fail('--overlay needs a file');
+      overlays.push(v);
     } else if (a.startsWith('-')) return fail(`unknown option ${a}\nusage: ${exportUsage}`, 2);
     else positional.push(a);
   }
@@ -41,7 +46,7 @@ export async function exportCommand(args: string[]): Promise<number> {
 
   const log = (s: string) => console.error(s);
   try {
-    const r = await exportSite({ root: process.cwd(), dir, refs, since, force, overwrite, webDir, log });
+    const r = await exportSite({ root: process.cwd(), dir, refs, since, force, overwrite, webDir, overlays, log });
     if (r.pairsSkipped) {
       log(`note: ${r.snapshots.length} refs exceed ${MAX_COMPARE_REFS}; compare files were not precomputed (compare view unavailable)`);
     }
