@@ -75,8 +75,8 @@ test('export writes the web UI, gzip snapshots, index and precomputed compares; 
     const index = (await (await fetch(`${url}/snapshots/index.json`)).json()) as Record<string, unknown>;
     expect(index).toMatchObject({ repo: 'repo', head: base, refs: [], worktree: null });
     expect((index.snapshots as { sha: string; ref: string }[]).map((s) => [s.ref, s.sha])).toEqual([
-      ['HEAD~1', base],
-      ['HEAD', head],
+      [base.slice(0, 12), base],
+      ['main', head],
     ]);
     for (const sha of [base, head]) {
       const buf = Buffer.from(await (await fetch(`${url}/snapshots/${sha}.json.gz`)).arrayBuffer());

@@ -119,7 +119,7 @@ test('refuses an oversize payload with a per-ref breakdown and a drop suggestion
   expect(r.code).toBe(1);
   expect(r.out).toContain('site status: new');
   expect(r.err).toContain('exceeds the 0.001 MB limit');
-  expect(r.err).toMatch(/HEAD~1 [0-9a-f]{7} +snapshot .* compare/);
+  expect(r.err).toMatch(/[0-9a-f]{12} [0-9a-f]{7} +snapshot .* compare/);
   expect(r.err).toMatch(/suggestion: drop|even a single ref/);
   expect(fs.existsSync(path.join(tmp, 'args.txt'))).toBe(false);
   expect(tempDirsLeft()).toEqual([]);
