@@ -22,6 +22,7 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
   serve: serveCommand,
   export: exportCommand,
   publish: publishCommand,
+  trace: (args) => import('./commands/trace.ts').then((m) => m.traceCommand(args)),
   help: async () => {
     console.log(usage);
     return 0;
