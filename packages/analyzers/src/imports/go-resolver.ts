@@ -16,6 +16,12 @@ export interface GoResolver extends Resolver {
   packageOf(file: string): string | undefined;
 }
 
+/** True for paths the go tool ignores: under vendor/, testdata/, or a directory starting with `_` or `.`. */
+export function isGoIgnoredPath(file: string): boolean {
+  const dirs = file.split('/').slice(0, -1);
+  return dirs.some((d) => d === 'vendor' || d === 'testdata' || d.startsWith('_') || d.startsWith('.'));
+}
+
 function readModFile(root: string, rel: string): string | undefined {
   try {
     return readFileSync(join(root, rel), 'utf8');
@@ -72,11 +78,11 @@ function externalName(spec: string): string {
  */
 export function createGoResolver(root: string, files: string[]): GoResolver {
   const pkgDirs = new Set<string>();
-  for (const f of files) if (f.endsWith('.go')) pkgDirs.add(dirOf(f));
+  for (const f of files) if (f.endsWith('.go') && !isGoIgnoredPath(f)) pkgDirs.add(dirOf(f));
 
   const byPath = new Map<string, string>();
   for (const f of files) {
-    if (f !== 'go.mod' && !f.endsWith('/go.mod')) continue;
+    if ((f !== 'go.mod' && !f.endsWith('/go.mod')) || isGoIgnoredPath(f)) continue;
     const src = readModFile(root, f);
     if (src === undefined) continue;
     const dir = dirOf(f);
