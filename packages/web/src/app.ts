@@ -3,7 +3,17 @@ import { isAnalyzed, WORKTREE, type DataSource, type Snapshot, type SnapshotInde
 import { createHiddenStore, filterDiff, filterSnapshot, type HiddenStore, type HideTarget } from './hidden.ts';
 import { createHiddenUI, type HiddenUI } from './hiddenui.ts';
 import { createRefPicker, tierBadges, type RefPicker } from './refpicker.ts';
-import { colorScale, createLegend, createTreemap, legendLabel, type ColorMode, type Treemap } from './treemap.ts';
+import {
+  colorModes,
+  colorScale,
+  createLegend,
+  createTreemap,
+  legendLabel,
+  parseColorMode,
+  setOverlays,
+  type ColorMode,
+  type Treemap,
+} from './treemap.ts';
 
 export interface App {
   source: DataSource;
@@ -41,8 +51,9 @@ export function writeHashSha(sha: string): void {
   writeHashParam('sha', sha);
 }
 
+/** `mode=` (complexity, churn or overlay:<name> for a loaded overlay); complexity otherwise. */
 export function readHashMode(): ColorMode {
-  return readHashParam('mode') === 'churn' ? 'churn' : 'complexity';
+  return parseColorMode(readHashParam('mode')) ?? 'complexity';
 }
 
 export type ViewName = 'treemap' | 'graph' | 'map' | 'compare';
@@ -104,21 +115,6 @@ function createTreemapView(el: HTMLElement, hooks: ViewHooks): TreemapView {
   return view;
 }
 
-/** The graph view pulls in Cytoscape, so it is loaded on first use. */
-async function createGraphPane(el: HTMLElement, hooks: ViewHooks): Promise<View> {
-  const { createGraphView } = await import('./graph/view.ts');
-  const graph = createGraphView(el, { onContextMenu: hooks.onContextMenu, barExtra: hooks.barExtra });
-  const view: View = {
-    el,
-    snap: null,
-    render(snap) {
-      view.snap = snap;
-      graph.render(snap);
-    },
-  };
-  return view;
-}
-
 interface MapView extends View {
   mode: ColorMode;
   edges: boolean;
@@ -127,22 +123,18 @@ interface MapView extends View {
 }
 
 /**
- * Experimental map: the graph view in boxes mode (files as code-sized, metric-colored boxes) plus
- * the treemap's color toggle and legend and a Show edges checkbox in its summary bar.
+ * Graph view (dots) or the experimental map (boxes: files as code-sized boxes), both with file nodes
+ * colored by the active metric and the treemap's color toggle and legend in the summary bar; the map
+ * also has a Show edges checkbox. Cytoscape is loaded on first use.
  */
-async function createMapPane(el: HTMLElement, hooks: ViewHooks): Promise<MapView> {
+async function createGraphPane(el: HTMLElement, hooks: ViewHooks, kind: 'dots' | 'boxes'): Promise<MapView> {
   const { createGraphView } = await import('./graph/view.ts');
-  const showEdges = readHashEdges();
+  const showEdges = kind === 'boxes' ? readHashEdges() : true;
   const toggle = document.createElement('div');
   toggle.className = 'segmented';
   toggle.setAttribute('role', 'group');
   toggle.setAttribute('aria-label', 'Color by');
-  const modeButtons = (
-    [
-      ['complexity', 'Complexity'],
-      ['churn', 'Churn'],
-    ] as const
-  ).map(([mode, label]) => {
+  const modeButtons = colorModes().map(([mode, label]) => {
     const b = document.createElement('button');
     b.type = 'button';
     b.textContent = label;
@@ -167,19 +159,19 @@ async function createMapPane(el: HTMLElement, hooks: ViewHooks): Promise<MapView
   }
 
   const graph = createGraphView(el, {
-    mode: 'boxes',
+    mode: kind,
     colorMode: readHashMode(),
     showEdges,
     onContextMenu: hooks.onContextMenu,
     barExtra: () => {
       const tools = document.createElement('span');
       tools.className = 'map-tools';
-      tools.append(hooks.barExtra(), toggle, edgesLabel, legendSlot);
+      tools.append(hooks.barExtra(), toggle, ...(kind === 'boxes' ? [edgesLabel] : []), legendSlot);
       syncControls();
       return tools;
     },
   });
-  el.classList.add('map');
+  if (kind === 'boxes') el.classList.add('map');
   const view: MapView = {
     el,
     snap: null,
@@ -248,7 +240,7 @@ function renderSummaryBar(view: TreemapView, snap: Snapshot, hooks: ViewHooks): 
   toggle.className = 'segmented';
   toggle.setAttribute('role', 'group');
   toggle.setAttribute('aria-label', 'Color by');
-  for (const [mode, label] of [['complexity', 'Complexity'], ['churn', 'Churn']] as const) {
+  for (const [mode, label] of colorModes()) {
     const b = document.createElement('button');
     b.type = 'button';
     b.textContent = label;
@@ -282,6 +274,7 @@ export async function startApp(root: HTMLElement, source: DataSource): Promise<A
   let loadSeq = 0;
   let treemapView: TreemapView | null = null;
   let mapView: MapView | null = null;
+  let graphView: MapView | null = null;
   const views = new Map<ViewName, Promise<View>>();
   let compare: Promise<CompareView> | null = null;
 
@@ -322,9 +315,9 @@ export async function startApp(root: HTMLElement, source: DataSource): Promise<A
       const el = newPane(name);
       v =
         name === 'graph'
-          ? createGraphPane(el, hooks)
+          ? createGraphPane(el, hooks, 'dots').then((g) => (graphView = g))
           : name === 'map'
-            ? createMapPane(el, hooks).then((m) => (mapView = m))
+            ? createGraphPane(el, hooks, 'boxes').then((m) => (mapView = m))
             : Promise.resolve((treemapView = createTreemapView(el, hooks)));
       views.set(name, v);
     }
@@ -369,10 +362,11 @@ export async function startApp(root: HTMLElement, source: DataSource): Promise<A
     const view = await getView(name);
     if (name !== active) return;
     showPane(view.el);
-    // Treemap and map share the mode= param; catch up with a change made in the other one.
+    // Treemap, graph and map share the mode= param; catch up with a change made in another one.
     const mode = readHashMode();
     if (name === 'treemap' && treemapView && treemapView.mode !== mode) treemapView.setMode(mode);
     if (name === 'map' && mapView && mapView.mode !== mode) mapView.setMode(mode);
+    if (name === 'graph' && graphView && graphView.mode !== mode) graphView.setMode(mode);
     if (view.snap !== snap) {
       const t = performance.now();
       view.render(snap);
@@ -442,6 +436,13 @@ export async function startApp(root: HTMLElement, source: DataSource): Promise<A
         : 'No snapshot data found. Run `codeviz serve` (or open an exported site with snapshots/index.json).';
     return app;
   }
+  // Overlays become extra color modes; load them before any view reads mode= from the hash.
+  try {
+    const list = await source.overlays();
+    setOverlays(await Promise.all(list.map((o) => source.overlay(o.name))));
+  } catch (err) {
+    console.warn(`codeviz: could not load overlays: ${(err as Error).message}`);
+  }
   title.textContent = `codeviz · ${app.index.repo}`;
   document.title = `codeviz · ${app.index.repo}`;
   app.picker.setIndex(app.index);
@@ -477,6 +478,7 @@ export async function startApp(root: HTMLElement, source: DataSource): Promise<A
     const mode = readHashMode();
     if (treemapView && mode !== treemapView.mode) treemapView.setMode(mode);
     if (mapView && mode !== mapView.mode) mapView.setMode(mode);
+    if (graphView && mode !== graphView.mode) graphView.setMode(mode);
     if (mapView && readHashEdges() !== mapView.edges) mapView.setShowEdges(readHashEdges());
     const view = readHashView();
     if (view === 'compare' && active === 'compare') void showActive();

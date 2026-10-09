@@ -3,7 +3,7 @@ import fcose from 'cytoscape-fcose';
 import type { Snapshot } from '../data.ts';
 import type { HideTarget } from '../hidden.ts';
 import { tierBadges } from '../refpicker.ts';
-import { colorScale, metric, type ColorMode, type ColorScale } from '../treemap.ts';
+import { colorScale, metric, overlayTipRows, type ColorMode, type ColorScale } from '../treemap.ts';
 import type { FileEntry } from '@codeviz/core';
 import { boxSize } from './boxes.ts';
 import {
@@ -29,7 +29,7 @@ export interface GraphView {
   setChangedOnly(on: boolean): void;
   /** Re-measure the container (after it was hidden or resized); `fit` also fits the view. */
   resize(fit: boolean): void;
-  /** Boxes mode: recolor file boxes by complexity or churn. */
+  /** Recolor file boxes (or file dots, when created with a colorMode) by complexity, churn or an overlay. */
   setColorMode(mode: ColorMode): void;
   /** Hide or show all edges without moving any node. */
   setShowEdges(on: boolean): void;
@@ -172,6 +172,8 @@ const STYLE: cytoscape.StylesheetJson = [
     },
   },
   { selector: '.unchanged-hidden', style: { display: 'none' } },
+  // File dots colored by the active metric (graph view only; set when created with a colorMode).
+  { selector: 'node[dot]', style: { 'background-color': 'data(dot)' } },
   { selector: 'node:selected', style: { 'border-width': 3, 'border-color': '#2f6fdb' } },
   { selector: 'edge:selected', style: { 'line-color': '#2f6fdb', 'target-arrow-color': '#2f6fdb' } },
   { selector: 'edge.edges-off', style: { display: 'none' } },
@@ -204,6 +206,8 @@ const BOX_STYLE: cytoscape.StylesheetJson = [
 
 /** Neutral grey for files without the active metric (the treemap's hatched n/a fill does not exist here). */
 const NA_BOX = '#e3e5e9';
+/** Same for dots, a step darker so a small dot still reads on the white canvas. */
+const NA_DOT = '#b8bec8';
 const BOX_FOLDER_MAX = 320;
 const fmtOr = (v: number | undefined) => (v === undefined ? 'n/a' : String(v));
 
@@ -223,7 +227,7 @@ export interface GraphViewOptions {
   barExtra?(): Node;
   /** 'boxes' (map view): files and collapsed folders drawn as rectangles sized by code. Default 'dots'. */
   mode?: 'dots' | 'boxes';
-  /** Boxes mode: initial color metric. */
+  /** Initial color metric for file boxes; in dots mode, setting it colors file dots too. */
   colorMode?: ColorMode;
   /** Initial edge visibility (default true). */
   showEdges?: boolean;
@@ -252,6 +256,7 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions =
   container.replaceChildren(bar, row);
 
   const boxes = opts.mode === 'boxes';
+  const colored = boxes || opts.colorMode !== undefined;
   const cy: Core = cytoscape({
     container: cyBox,
     style: boxes ? [...STYLE, ...BOX_STYLE] : STYLE,
@@ -285,7 +290,7 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions =
       ghost: n.ghost ?? false,
       label: group ? `${hasKids ? '▾' : '▸'} ${n.label}` : n.label,
       size: group || isOpaqueKind(n.kind) ? Math.round(22 + 5 * Math.sqrt(n.fileCount ?? 0)) : 14,
-      ...(boxes ? boxData(n, hasKids) : {}),
+      ...(boxes ? boxData(n, hasKids) : colored && n.type === 'leaf' && n.kind === 'file' ? { dot: fileColor(n.id) } : {}),
     };
   }
 
@@ -302,7 +307,7 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions =
   function fileColor(path: string): string {
     const f = filesByPath.get(path);
     const v = f ? metric(f, colorMode) : undefined;
-    return v === undefined || !scale ? NA_BOX : scale.color(v);
+    return v === undefined || !scale ? (boxes ? NA_BOX : NA_DOT) : scale.color(v);
   }
 
   /** Lay out the shown elements only (fcose throws on display:none nodes hidden by Changed only). */
@@ -586,10 +591,12 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions =
       rows.push(['Lines', `${fmtOr(f.loc)} loc / ${fmtOr(f.code)} code / ${fmtOr(f.comments)} comments`]);
       rows.push(['Complexity', f.complexity ? `${f.complexity.sum} sum / ${f.complexity.max} max / ${f.complexity.functions} functions` : 'n/a']);
       rows.push(['Churn', f.churn ? `${f.churn.commits} commits / ${f.churn.authors} authors` : 'n/a']);
+      rows.push(...overlayTipRows(n.id));
     } else if (n.metrics) {
       rows.push(['Code', `${na(n.metrics.code)} lines`]);
       rows.push(['Complexity', `${na(n.metrics.complexityMax)} max`]);
       rows.push(['Churn', `${na(n.metrics.churnCommits)} commits`]);
+      if (colored && n.kind === 'file') rows.push(...overlayTipRows(n.id));
     }
     if (isOpaqueKind(n.kind) && n.type === 'leaf') rows.unshift(['Kind', n.kind]);
     if (n.ghost) rows.unshift(['Status', 'removed (base only)']);
@@ -632,7 +639,7 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions =
     render(next, prebuilt) {
       snap = next;
       model = prebuilt ?? buildGraphModel(next, { allFiles: boxes });
-      if (boxes) {
+      if (colored) {
         filesByPath = new Map(next.files.map((f) => [f.path, f]));
         scale = colorScale(next.files, colorMode);
       }
@@ -675,9 +682,10 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions =
     setColorMode(mode) {
       if (mode === colorMode) return;
       colorMode = mode;
-      if (!boxes || !snap) return;
+      if (!colored || !snap) return;
       scale = colorScale(snap.files, colorMode);
       cy.batch(() => {
+        if (!boxes) cy.nodes('[dot]').forEach((n) => void n.data('dot', fileColor(n.id())));
         cy.nodes('[?box][type = "leaf"][kind = "file"]').forEach((n) => {
           const bg = fileColor(n.id());
           n.data({ bg, fg: textOn(bg) });
