@@ -30,6 +30,11 @@ test('HEAD, WORKTREE, unknown', () => {
   expect(() => resolveRef(repo, 'nope')).toThrow(/Unknown git ref/);
 });
 
+test('a ref starting with a dash is rejected, not passed to git as an option', () => {
+  expect(() => resolveRef(repo, '--help')).toThrow(/Invalid git ref/);
+  expect(() => resolveRef(repo, '-v1')).toThrow(/Invalid git ref/);
+});
+
 test('tag is detached, checkout shows old tree and is cleaned up even on reject', async () => {
   const r = resolveRef(repo, 'v1');
   expect(r.kind).toBe('detached');

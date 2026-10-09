@@ -109,12 +109,33 @@ Cache key is SHA + `toolVersion`; an analyzer upgrade invalidates the cache.
 
 ## UI (Vite + TypeScript)
 
-Ref picker (cached SHAs, branches, tags; unanalyzed state) → treemap (area = code
+Ref picker (cached SHAs, branches, tags; unanalyzed state, plus a field that takes any
+ref `git rev-parse` accepts — a sha, `v1.2.0`, `HEAD~50` — and analyzes it) → treemap (area = code
 lines, color = complexity | churn) → dependency graph (Cytoscape, collapsible
 dirs, cycles highlighted) → compare (treemap by delta, added/removed edges, table
 of biggest changes). `serve` exposes `/api/snapshots`, `/api/snapshots/:sha`,
-`/api/compare`, `/api/analyze`. `export` builds the same UI reading static JSON;
-one code path, two data sources.
+`/api/compare`, `/api/analyze`, `/api/commits`. `export` builds the same UI reading
+static JSON; one code path, two data sources.
+
+### Compare modes
+
+The compare view has two modes, held in the hash as `cmp=branches|history`:
+
+- **Branches** (the default) compares one ref with another — the analyzed snapshots,
+  branch and tag tips, and `WORKTREE` as head.
+- **History** compares two commits inside one branch. A Branch select drives two commit
+  dropdowns fed by `GET /api/commits?ref=<branch>&limit=<n>` (`git log`, newest first,
+  50 by default and 200 at most), each row marked when a snapshot for it is cached.
+  Picking a branch compares its tip with the commit before it, unless the hash already
+  names a pair in that branch. The branch is the hash param `branch`. A base that is
+  newer than the head still compares, with a note that the deltas read backwards.
+
+Both modes carry a `⇄` button between Base and Head that swaps the pair and compares again.
+It is disabled while either side is empty, and while the head is `WORKTREE`, which the server
+refuses as a base.
+
+A static export has no server to analyze a commit it does not hold, so the mode switch
+and the picker's ref field only appear when the data source is `serve`.
 
 ### Overlays
 

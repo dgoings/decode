@@ -73,6 +73,29 @@ test('analyze, list and fetch snapshots over HTTP', async () => {
   expect((await (await fetch(`${base}/api/snapshots`)).json()).worktree).not.toBeNull();
 }, 30_000);
 
+test('commits: newest first, limited, with a bad ref refused', async () => {
+  fs.writeFileSync(path.join(repo, 'a.ts'), 'export const a = 2;\n');
+  git('commit', '-qam', 'two');
+  const head = git('rev-parse', 'HEAD');
+
+  const all = await (await fetch(`${base}/api/commits?ref=HEAD`)).json();
+  expect(all.ref).toBe('HEAD');
+  expect(all.commits.map((c: { subject: string }) => c.subject)).toEqual(['two', 'one']);
+  expect(all.commits[0]).toMatchObject({ sha: head, author: 't' });
+  expect(Date.parse(all.commits[0].date)).toBeGreaterThan(0);
+
+  const one = await (await fetch(`${base}/api/commits?ref=HEAD&limit=1`)).json();
+  expect(one.commits.map((c: { subject: string }) => c.subject)).toEqual(['two']);
+
+  const bad = await fetch(`${base}/api/commits?ref=nope`);
+  expect(bad.status).toBe(400);
+  expect((await bad.json()).error).toContain('nope');
+
+  const dash = await fetch(`${base}/api/commits?ref=--all`);
+  expect(dash.status).toBe(400);
+  expect((await dash.json()).error).toContain('Invalid git ref');
+});
+
 test('analysis runs off the event loop: reads stay responsive and a duplicate POST gets 409', async () => {
   fs.writeFileSync(path.join(repo, 'b.ts'), 'export const b = 1;\n');
   const first = post('WORKTREE');

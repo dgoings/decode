@@ -112,10 +112,15 @@ function sliceLegend(): HTMLElement {
 export function createCompareView(root: HTMLElement, deps: CompareDeps): CompareView {
   root.classList.add('compare');
   const summary = el('div', 'summary-bar cmp-summary');
-  const toolbar = createCompareToolbar((base, head) => {
-    if (base) deps.writeParam('base', base);
-    if (head) deps.writeParam('head', head);
-    show();
+  const toolbar = createCompareToolbar({
+    source: deps.source,
+    readParam: deps.readParam,
+    writeParam: deps.writeParam,
+    onChange: (base, head) => {
+      if (base) deps.writeParam('base', base);
+      if (head) deps.writeParam('head', head);
+      show();
+    },
   });
   const empty = el('p', 'cmp-empty muted', 'Pick a base and a head to compare.');
   const body = el('div', 'cmp-body');

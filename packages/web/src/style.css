@@ -28,6 +28,23 @@ header h1 { font-size: 15px; margin: 0; font-weight: 600; }
   width: 280px; flex-shrink: 0; overflow-y: auto;
   border-right: 1px solid var(--line); background: var(--panel); padding: 8px 0;
 }
+.ref-find {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  padding: 2px 16px 8px; border-bottom: 1px solid var(--line);
+}
+.ref-find[hidden] { display: none; }
+.ref-find input {
+  flex: 1; min-width: 0; font: inherit; font-size: 12px; padding: 3px 5px;
+  color: inherit; background: var(--bg); border: 1px solid var(--line); border-radius: 3px;
+}
+.ref-find input:disabled { color: var(--muted); }
+.ref-find button {
+  font: inherit; font-size: 12px; padding: 3px 8px; cursor: pointer;
+  color: inherit; background: var(--bg); border: 1px solid var(--line); border-radius: 3px;
+}
+.ref-find button:hover:not(:disabled) { background: #eceef2; }
+.ref-find button:disabled { color: var(--muted); cursor: default; }
+.ref-find .ref-note, .ref-find .error { flex-basis: 100%; margin: 0; }
 .refpicker h2 {
   font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em;
   color: var(--muted); margin: 12px 16px 4px;
@@ -157,6 +174,15 @@ header .view-switch button { font-size: 13px; padding: 3px 14px; }
 .cmp-pick { display: inline-flex; align-items: center; gap: 6px; }
 .cmp-pick span { color: var(--muted); }
 .cmp-pick select { font: inherit; font-size: 12px; padding: 2px 4px; max-width: 260px; }
+.cmp-mode { margin-left: 0; }
+.cmp-swap {
+  font: inherit; font-size: 13px; line-height: 1; padding: 3px 6px; cursor: pointer;
+  color: var(--muted); background: var(--bg); border: 1px solid var(--line); border-radius: 3px;
+}
+.cmp-swap:hover:not(:disabled) { background: #eceef2; color: var(--fg); }
+.cmp-swap:disabled { color: var(--line); cursor: default; }
+.cmp-mode[hidden], .cmp-pick[hidden], .cmp-note[hidden] { display: none; }
+.cmp-note { font-size: 12px; color: var(--error); flex-basis: 100%; }
 .cmp-status { font-size: 12px; color: var(--muted); }
 .cmp-status[data-kind='error'] { color: var(--error); }
 .cmp-empty { margin: 16px 0; }

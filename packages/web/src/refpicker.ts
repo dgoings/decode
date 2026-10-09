@@ -43,6 +43,21 @@ export function tierBadges(languages: Record<string, LanguageTier>): HTMLElement
   return wrap;
 }
 
+/**
+ * The analyzed sha that `ref` already names, so typing one costs no analysis: a branch or tag at an
+ * analyzed sha, or a sha (or unambiguous prefix) with a snapshot. Null means "ask the server".
+ */
+export function findAnalyzed(index: SnapshotIndex, ref: string): string | null {
+  if (ref === WORKTREE) return index.worktree ? WORKTREE : null;
+  const shas = new Set(index.snapshots.map((s) => s.sha));
+  const named = index.refs.find((r) => r.name === ref);
+  if (named) return shas.has(named.sha) ? named.sha : null;
+  if (!/^[0-9a-f]{4,40}$/i.test(ref)) return null;
+  const lower = ref.toLowerCase();
+  const hits = [...shas].filter((sha) => sha.startsWith(lower));
+  return hits.length === 1 ? hits[0]! : null;
+}
+
 function groups(index: SnapshotIndex): Array<[string, Entry[]]> {
   const bySha = new Map(index.snapshots.map((s) => [s.sha, s]));
   // Snapshots labelled HEAD or a sha (older cache entries) borrow a branch or tag name at that sha.
@@ -90,13 +105,40 @@ function groups(index: SnapshotIndex): Array<[string, Entry[]]> {
   ];
 }
 
+/** Error key for the "any ref" form; no entry can collide with it (entry keys carry a `:` or are `wt`). */
+const FIND_KEY = 'find';
+
 export function createRefPicker(opts: RefPickerOptions): RefPicker {
   const el = document.createElement('nav');
   el.className = 'refpicker';
+  // The form lives outside the re-rendered list so typing survives a render.
+  const lists = document.createElement('div');
   let index: SnapshotIndex | null = null;
   let selected: string | null = null;
   let busyKey: string | null = null;
   const errors = new Map<string, string>();
+
+  /** Analyze `ref` through the server, then select the sha it resolved to. False means it failed. */
+  async function analyzeAndSelect(key: string, ref: string): Promise<boolean> {
+    if (!opts.source.analyze) return false;
+    busyKey = key;
+    render();
+    try {
+      const { sha } = await opts.source.analyze(ref);
+      const next = await opts.source.index();
+      opts.onIndex?.(next);
+      index = next;
+      busyKey = null;
+      render();
+      await opts.onSelect(sha);
+      return true;
+    } catch (err) {
+      errors.set(key, (err as Error).message);
+      busyKey = null;
+      render();
+      return false;
+    }
+  }
 
   async function choose(entry: Entry): Promise<void> {
     if (busyKey) return;
@@ -105,22 +147,61 @@ export function createRefPicker(opts: RefPickerOptions): RefPicker {
       await opts.onSelect(entry.sha);
       return;
     }
-    if (!opts.source.analyze) return;
-    busyKey = entry.key;
-    render();
-    try {
-      const { sha } = await opts.source.analyze(entry.ref);
-      const next = await opts.source.index();
-      opts.onIndex?.(next);
-      index = next;
-      busyKey = null;
+    await analyzeAndSelect(entry.key, entry.ref);
+  }
+
+  const find = document.createElement('form');
+  find.className = 'ref-find';
+  const findInput = document.createElement('input');
+  findInput.type = 'text';
+  findInput.name = 'ref';
+  findInput.placeholder = 'any ref: sha, v1.2.0, HEAD~50';
+  findInput.autocomplete = 'off';
+  findInput.spellcheck = false;
+  const findButton = document.createElement('button');
+  findButton.type = 'submit';
+  findButton.textContent = 'Analyze';
+  const findNote = document.createElement('span');
+  findNote.className = 'ref-note';
+  const findError = document.createElement('p');
+  findError.className = 'error';
+  find.append(findInput, findButton, findNote, findError);
+
+  /** Load the typed ref, analyzing it first unless a snapshot for it is already cached. */
+  async function submitFind(): Promise<void> {
+    if (busyKey) return;
+    const ref = findInput.value.trim();
+    errors.delete(FIND_KEY);
+    renderFind();
+    if (ref === '') return;
+    const hit = index ? findAnalyzed(index, ref) : null;
+    if (hit) {
+      findInput.value = '';
       render();
-      await opts.onSelect(sha);
-    } catch (err) {
-      errors.set(entry.key, (err as Error).message);
-      busyKey = null;
-      render();
+      await opts.onSelect(hit);
+      return;
     }
+    if (await analyzeAndSelect(FIND_KEY, ref)) {
+      findInput.value = '';
+      renderFind();
+    }
+  }
+
+  find.addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    void submitFind();
+  });
+
+  function renderFind(): void {
+    const busy = busyKey === FIND_KEY;
+    find.hidden = !opts.source.analyze;
+    findInput.disabled = busy;
+    findButton.disabled = busyKey !== null;
+    findNote.hidden = !busy;
+    findNote.innerHTML = busy ? '<span class="spinner"></span> analyzing…' : '';
+    const message = errors.get(FIND_KEY);
+    findError.hidden = message === undefined;
+    findError.textContent = message ?? '';
   }
 
   function renderEntry(entry: Entry): HTMLElement {
@@ -166,7 +247,8 @@ export function createRefPicker(opts: RefPickerOptions): RefPicker {
   }
 
   function render(): void {
-    el.replaceChildren();
+    renderFind();
+    lists.replaceChildren();
     if (!index) return;
     for (const [title, entries] of groups(index)) {
       if (!entries.length) continue;
@@ -176,9 +258,12 @@ export function createRefPicker(opts: RefPickerOptions): RefPicker {
       const ul = document.createElement('ul');
       ul.append(...entries.map(renderEntry));
       section.append(h, ul);
-      el.append(section);
+      lists.append(section);
     }
   }
+
+  el.append(find, lists);
+  renderFind();
 
   return {
     el,

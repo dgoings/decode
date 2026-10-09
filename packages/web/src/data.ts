@@ -19,6 +19,15 @@ export interface RefEntry {
   kind: 'branch' | 'tag';
 }
 
+/** One commit of a branch's history (GET /api/commits). */
+export interface CommitEntry {
+  sha: string;
+  subject: string;
+  author: string;
+  /** Author date, ISO 8601. */
+  date: string;
+}
+
 /** Mirrors GET /api/snapshots (and snapshots/index.json for static export). */
 export interface SnapshotIndex {
   repo: string;
@@ -77,6 +86,8 @@ export interface DataSource {
   index(): Promise<SnapshotIndex>;
   snapshot(sha: string): Promise<Snapshot>;
   analyze?(ref: string): Promise<{ sha: string }>;
+  /** Newest-first commits of `ref`; only an api source has them, so the History mode is serve-only. */
+  commits?(ref: string, limit?: number): Promise<CommitEntry[]>;
   /** Diff two refs; blocks until both are analyzed. `head` may be WORKTREE. */
   compare?(base: string, head: string): Promise<SnapshotDiff>;
   /** Overlays available as extra color modes; [] when there are none. */
@@ -136,6 +147,12 @@ export class ApiDataSource implements DataSource {
   compare(base: string, head: string): Promise<SnapshotDiff> {
     const q = new URLSearchParams({ base, head });
     return getJson(`${this.base}/compare?${q}`);
+  }
+
+  async commits(ref: string, limit?: number): Promise<CommitEntry[]> {
+    const q = new URLSearchParams({ ref });
+    if (limit !== undefined) q.set('limit', String(limit));
+    return (await getJson<{ commits: CommitEntry[] }>(`${this.base}/commits?${q}`)).commits;
   }
 
   overlays(): Promise<OverlaySummary[]> {

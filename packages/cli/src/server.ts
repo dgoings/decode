@@ -85,6 +85,31 @@ async function listRefs(root: string): Promise<{ name: string; sha: string; kind
     });
 }
 
+export interface CommitEntry {
+  sha: string;
+  subject: string;
+  author: string;
+  /** Author date, ISO 8601. */
+  date: string;
+}
+
+/** Commit list size for GET /api/commits: the default, and the ceiling a caller may ask for. */
+const DEFAULT_COMMITS = 50;
+const MAX_COMMITS = 200;
+
+/** The newest `limit` commits reachable from `ref`, newest first. */
+async function listCommits(root: string, ref: string, limit: number): Promise<CommitEntry[]> {
+  // \x1f separates the fields; %s is one line, so a record is one line.
+  const out = await gitAsync(root, ['log', `--max-count=${limit}`, '--format=%H%x1f%s%x1f%an%x1f%aI', ref, '--']);
+  return out
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => {
+      const [sha, subject, author, date] = line.split('\x1f');
+      return { sha: sha!, subject: subject ?? '', author: author ?? '', date: date ?? '' };
+    });
+}
+
 function sendJson(res: http.ServerResponse, status: number, body: unknown): void {
   const buf = Buffer.from(JSON.stringify(body));
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': buf.length });
@@ -260,6 +285,19 @@ export function createServer(opts: ServerOptions): CodevizServer {
     }
   }
 
+  /** GET /api/commits?ref=<branch>&limit=<n>: the commits the compare view's History mode picks from. */
+  async function handleCommits(res: http.ServerResponse, url: URL): Promise<void> {
+    const ref = url.searchParams.get('ref') || 'HEAD';
+    const asked = Number(url.searchParams.get('limit'));
+    const limit = Number.isFinite(asked) && asked > 0 ? Math.min(Math.trunc(asked), MAX_COMMITS) : DEFAULT_COMMITS;
+    try {
+      resolveRef(root, ref);
+    } catch (err) {
+      return sendJson(res, 400, { error: err instanceof Error ? err.message : String(err) });
+    }
+    sendJson(res, 200, { ref, commits: await listCommits(root, ref, limit) });
+  }
+
   async function handleCompare(req: http.IncomingMessage, res: http.ServerResponse, url: URL): Promise<void> {
     const base = url.searchParams.get('base');
     const head = url.searchParams.get('head');
@@ -358,6 +396,7 @@ export function createServer(opts: ServerOptions): CodevizServer {
       const gz = traces.gz(tid);
       return gz ? sendGzippedJson(req, res, gz) : sendJson(res, 404, { error: 'no such trace' });
     }
+    if (p === '/api/commits' && method === 'GET') return handleCommits(res, url);
     if (p === '/api/analyze' && method === 'POST') return handleAnalyze(req, res);
     if (p === '/api/compare' && method === 'GET') return handleCompare(req, res, url);
     if (p.startsWith('/api/')) return sendJson(res, 404, { error: 'not found' });

@@ -19,6 +19,8 @@ function git(root: string, args: string[]): string {
 
 export function resolveRef(root: string, ref: string): ResolvedRef {
   if (ref === 'WORKTREE') return { sha: 'WORKTREE', ref, kind: 'worktree' };
+  // A ref is typed by hand (CLI argument, POST /api/analyze); git would read a leading dash as an option.
+  if (ref.startsWith('-')) throw new Error(`Invalid git ref: ${ref}`);
   let sha: string;
   try {
     sha = git(root, ['rev-parse', '--verify', `${ref}^{commit}`]);
