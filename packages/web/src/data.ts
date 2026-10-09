@@ -88,6 +88,31 @@ export class ApiDataSource implements DataSource {
   }
 }
 
+/**
+ * Fetch `url` and parse it as JSON, gunzipping in the browser when the body is still gzip
+ * (a server that sets Content-Encoding: gzip has already decoded it). Resolves null on 404.
+ */
+async function getMaybeGzipJson<T>(url: string): Promise<T | null> {
+  let res: Response;
+  try {
+    res = await fetch(url);
+  } catch (err) {
+    throw new Error(`Request to ${url} failed: ${(err as Error).message}`);
+  }
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`${url}: ${res.status} ${res.statusText}`);
+  let bytes = new Uint8Array(await res.arrayBuffer());
+  if (bytes[0] === 0x1f && bytes[1] === 0x8b) {
+    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
+    bytes = new Uint8Array(await new Response(stream).arrayBuffer());
+  }
+  try {
+    return JSON.parse(new TextDecoder().decode(bytes)) as T;
+  } catch {
+    throw new Error(`${url} did not contain JSON`);
+  }
+}
+
 export class StaticDataSource implements DataSource {
   readonly kind = 'static' as const;
   constructor(private readonly base = 'snapshots') {}
@@ -96,12 +121,24 @@ export class StaticDataSource implements DataSource {
     return getJson(`${this.base}/index.json`);
   }
 
-  snapshot(sha: string): Promise<Snapshot> {
-    return getJson(`${this.base}/${encodeURIComponent(sha)}.json`);
+  /** `snapshots/<sha>.json.gz` from `codeviz export`; falls back to plain `<sha>.json` for hand-made fixtures. */
+  async snapshot(sha: string): Promise<Snapshot> {
+    const name = encodeURIComponent(sha);
+    const gz = await getMaybeGzipJson<Snapshot>(`${this.base}/${name}.json.gz`);
+    return gz ?? getJson(`${this.base}/${name}.json`);
   }
 
-  compare(_base: string, _head: string): Promise<SnapshotDiff> {
-    return Promise.reject(new Error('compare is not available in static exports'));
+  /** Precomputed by `codeviz export` for every ordered pair of exported refs. */
+  async compare(base: string, head: string): Promise<SnapshotDiff> {
+    const diff = await getMaybeGzipJson<SnapshotDiff>(
+      `${this.base}/compare/${encodeURIComponent(base)}-${encodeURIComponent(head)}.json.gz`,
+    );
+    if (!diff) {
+      throw new Error(
+        `this export has no precomputed comparison for ${base.slice(0, 7)} → ${head.slice(0, 7)} (re-export with these refs, at most 8)`,
+      );
+    }
+    return diff;
   }
 }
 

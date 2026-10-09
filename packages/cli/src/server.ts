@@ -37,7 +37,7 @@ const PLACEHOLDER = `<!doctype html><html><head><meta charset="utf-8"><title>cod
 </body></html>`;
 
 /** Directory holding the built web UI: dist/web next to the bundle, or packages/web/dist in dev. */
-function findWebDir(): string | null {
+export function findWebDir(): string | null {
   const here = path.dirname(fileURLToPath(import.meta.url));
   const candidates = [
     path.join(here, 'web'), // dist/cli.js -> dist/web

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { mergeSnapshots } from '@codeviz/core';
 import { listSnapshots, readSnapshot, writeSnapshot } from './cache.ts';
-import { originUrl, repoId, repoName } from './repo.ts';
+import { originUrl, redactOrigin, repoId, repoName } from './repo.ts';
 
 const tmp = mkdtempSync(join(tmpdir(), 'codeviz-'));
 process.env.XDG_CACHE_HOME = join(tmp, 'cache');
@@ -22,6 +22,10 @@ test('repoId is stable root sha; name and origin', () => {
   expect(repoId(repo)).toBe(root);
   expect(repoName(repo)).toBe('myrepo');
   expect(originUrl(repo)).toBe('');
+  git('remote', 'add', 'origin', 'https://user:ghp_secret@github.com/o/r.git');
+  expect(originUrl(repo)).toBe('https://github.com/o/r.git');
+  expect(redactOrigin('git@github.com:o/r.git')).toBe('git@github.com:o/r.git');
+  expect(redactOrigin('ssh://git@host/o/r.git')).toBe('ssh://host/o/r.git');
 });
 
 test('cache read/write/list and toolVersion mismatch', () => {
