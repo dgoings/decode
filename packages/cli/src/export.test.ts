@@ -26,7 +26,7 @@ beforeAll(() => {
   fs.mkdirSync(path.join(tmp, 'web', 'assets'), { recursive: true });
   fs.writeFileSync(path.join(tmp, 'web', 'index.html'), '<!doctype html><title>stub</title>');
   fs.writeFileSync(path.join(tmp, 'web', 'assets', 'app.js'), '//stub');
-  git('init', '-q');
+  git('init', '-q', '-b', 'main');
   fs.writeFileSync(path.join(repo, 'a.ts'), 'export const a = 1;\n');
   git('add', '.');
   git('commit', '-qm', 'one');
