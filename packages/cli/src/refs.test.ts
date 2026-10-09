@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { resolveRef, withCheckout } from './refs.ts';
+import { refName, resolveRef, withCheckout } from './refs.ts';
 
 let repo: string;
 const git = (...args: string[]) =>
@@ -14,7 +14,7 @@ const git = (...args: string[]) =>
 
 beforeAll(() => {
   repo = fs.mkdtempSync(path.join(os.tmpdir(), 'codeviz-test-'));
-  git('init', '-q');
+  git('init', '-q', '-b', 'main');
   fs.writeFileSync(path.join(repo, 'a.txt'), 'one');
   git('add', '.');
   git('commit', '-qm', 'one');
@@ -54,4 +54,10 @@ test('tag is detached, checkout shows old tree and is cleaned up even on reject'
 test('head and worktree use root', async () => {
   expect(await withCheckout(repo, resolveRef(repo, 'HEAD'), async (d) => d)).toBe(repo);
   expect(await withCheckout(repo, resolveRef(repo, 'WORKTREE'), async (d) => d)).toBe(repo);
+});
+
+test('refName: branch for HEAD, tag as given, short sha otherwise', () => {
+  const v1 = git('rev-parse', 'v1');
+  expect([refName(repo, 'HEAD', git('rev-parse', 'HEAD')), refName(repo, 'v1', v1), refName(repo, v1, v1)])
+    .toEqual(['main', 'v1', v1.slice(0, 12)]);
 });

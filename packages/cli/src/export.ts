@@ -105,7 +105,7 @@ export async function exportSite(opts: ExportOptions): Promise<ExportResult> {
       const t0 = Date.now();
       const { snapshot, cached } = await analyzeRef(root, r, { since: opts.since, log, force: opts.force });
       log(`${r} ${snapshot.sha.slice(0, 10)} ${cached ? 'cached' : `analyzed in ${Date.now() - t0}ms`}`);
-      if (!picked.some((p) => p.snapshot.sha === snapshot.sha)) picked.push({ snapshot, ref: r });
+      if (!picked.some((p) => p.snapshot.sha === snapshot.sha)) picked.push({ snapshot, ref: snapshot.ref });
     }
   } else {
     let headSha = '';

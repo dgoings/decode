@@ -34,6 +34,32 @@ export function resolveRef(root: string, ref: string): ResolvedRef {
   return { sha, ref, kind: sha === headSha ? 'head' : 'detached' };
 }
 
+/**
+ * A human-readable label for `ref`, which resolved to `sha`: the branch or tag name when the ref
+ * names one (HEAD resolves to the current branch, or a tag at HEAD when detached), else the 12-char
+ * short sha.
+ */
+export function refName(root: string, ref: string, sha: string): string {
+  if (ref === 'WORKTREE') return ref;
+  let full = '';
+  try {
+    full = git(root, ['rev-parse', '--symbolic-full-name', ref]);
+  } catch {
+    // ambiguous or not a symbolic ref
+  }
+  const m = /^refs\/(?:heads|tags|remotes)\/(.+)$/.exec(full);
+  if (m) return m[1]!;
+  if (ref === 'HEAD') {
+    try {
+      const tag = git(root, ['tag', '--points-at', sha]).split('\n')[0];
+      if (tag) return tag;
+    } catch {
+      // no tags
+    }
+  }
+  return sha.slice(0, 12);
+}
+
 export async function withCheckout<T>(
   root: string,
   resolved: ResolvedRef,

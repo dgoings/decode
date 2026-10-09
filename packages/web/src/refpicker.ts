@@ -26,6 +26,8 @@ export interface RefPicker {
   setSelected(sha: string | null): void;
 }
 
+// Mirrors isNamedRef in @codeviz/core (the core barrel pulls node:zlib, so the web bundle can't import it).
+const isNamedRef = (ref: string, sha: string) => ref !== '' && ref !== 'HEAD' && !/[~^@]/.test(ref) && !sha.startsWith(ref);
 const short = (sha: string) => (sha === WORKTREE ? sha : sha.slice(0, 7));
 
 export function tierBadges(languages: Record<string, LanguageTier>): HTMLElement {
@@ -43,6 +45,9 @@ export function tierBadges(languages: Record<string, LanguageTier>): HTMLElement
 
 function groups(index: SnapshotIndex): Array<[string, Entry[]]> {
   const bySha = new Map(index.snapshots.map((s) => [s.sha, s]));
+  // Snapshots labelled HEAD or a sha (older cache entries) borrow a branch or tag name at that sha.
+  const label = (ref: string, sha: string) =>
+    isNamedRef(ref, sha) ? ref : (index.refs.find((r) => r.sha === sha)?.name ?? short(sha));
   const worktree: Entry = {
     key: 'wt',
     label: WORKTREE,
@@ -55,7 +60,7 @@ function groups(index: SnapshotIndex): Array<[string, Entry[]]> {
     .sort((a, b) => b.analyzedAt.localeCompare(a.analyzedAt))
     .map((s) => ({
       key: `s:${s.sha}`,
-      label: s.ref && s.ref !== s.sha ? s.ref : short(s.sha),
+      label: label(s.ref, s.sha),
       detail: `${short(s.sha)} · ${new Date(s.analyzedAt).toLocaleString()}`,
       ref: s.sha,
       sha: s.sha,
