@@ -26,7 +26,7 @@ beforeAll(() => {
   repo = fs.mkdtempSync(path.join(os.tmpdir(), 'codeviz-analyze-'));
   cache = fs.mkdtempSync(path.join(os.tmpdir(), 'codeviz-cache-'));
   process.env.XDG_CACHE_HOME = cache;
-  git('init', '-q');
+  git('init', '-q', '-b', 'main');
   fs.writeFileSync(path.join(repo, 'a.ts'), 'export function f(x: number) {\n  return x > 1 ? 1 : 0;\n}\n');
   git('add', '.');
   git('commit', '-qm', 'one');
@@ -45,6 +45,7 @@ test('analyzeRef: HEAD is analyzed and cached, re-run hits the cache, WORKTREE i
   expect(first.cached).toBe(false);
   const s = first.snapshot;
   expect(s.sha).toBe(git('rev-parse', 'HEAD'));
+  expect(s.ref).toBe('main');
   expect(s.languages).toEqual({ ts: 'baseline' });
   const a = s.files.find((f) => f.path === 'a.ts')!;
   expect(a.lang).toBe('ts');
@@ -55,6 +56,8 @@ test('analyzeRef: HEAD is analyzed and cached, re-run hits the cache, WORKTREE i
   const second = await analyzeRef(repo, 'HEAD', { since: '1y' });
   expect(second.cached).toBe(true);
   expect(second.snapshot).toEqual(s);
+  // A cache hit by sha keeps the branch name it was created with.
+  expect((await analyzeRef(repo, s.sha, { since: '1y' })).snapshot.ref).toBe('main');
   expect(s.since).toBe('1y');
 
   // A different --since window is a cache miss and replaces the entry.

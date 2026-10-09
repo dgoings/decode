@@ -1,8 +1,8 @@
 import { execFileSync } from 'node:child_process';
 import { analyzeHistory, registerBuiltinAdapters, runAdapters } from '@codeviz/analyzers';
-import { mergeSnapshots, type Snapshot, type SnapshotMeta } from '@codeviz/core';
+import { isNamedRef, mergeSnapshots, type Snapshot, type SnapshotMeta } from '@codeviz/core';
 import { readSnapshot, writeSnapshot } from './cache.ts';
-import { resolveRef, withCheckout } from './refs.ts';
+import { refName, resolveRef, withCheckout } from './refs.ts';
 import { originUrl, repoId, repoName } from './repo.ts';
 import { version } from './version.ts';
 
@@ -31,10 +31,18 @@ export async function analyzeRef(
   if (resolved.kind === 'head' && git(root, ['status', '--porcelain']) !== '') resolved.kind = 'detached';
   const isWorktree = resolved.kind === 'worktree';
   const id = repoId(root);
+  const name = refName(root, ref, resolved.sha);
 
   if (!isWorktree && !opts.force) {
     const hit = readSnapshot(id, resolved.sha, version);
-    if (hit && hit.since === opts.since) return { snapshot: hit, cached: true };
+    if (hit && hit.since === opts.since) {
+      // The cache is keyed by sha; upgrade a sha/HEAD label to a branch or tag name, never the reverse.
+      if (hit.ref !== name && isNamedRef(name, hit.sha) && !isNamedRef(hit.ref, hit.sha)) {
+        hit.ref = name;
+        writeSnapshot(hit);
+      }
+      return { snapshot: hit, cached: true };
+    }
   }
 
   const snapshot = await withCheckout(root, resolved, async (dir) => {
@@ -43,7 +51,7 @@ export async function analyzeRef(
       repoId: id,
       origin: originUrl(root),
       sha: resolved.sha,
-      ref,
+      ref: name,
       analyzedAt: new Date().toISOString(),
       toolVersion: version,
       since: opts.since,
