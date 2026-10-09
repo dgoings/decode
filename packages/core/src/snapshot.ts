@@ -60,3 +60,11 @@ export type SnapshotMeta = Pick<
   Snapshot,
   'repo' | 'repoId' | 'origin' | 'sha' | 'ref' | 'analyzedAt' | 'toolVersion' | 'since'
 >;
+
+/**
+ * Whether a snapshot's ref label is a human-readable name (a branch or tag) rather than
+ * HEAD, a revision expression, or (a prefix of) its own sha.
+ */
+export function isNamedRef(ref: string, sha: string): boolean {
+  return ref !== '' && ref !== 'HEAD' && !/[~^@]/.test(ref) && !sha.startsWith(ref);
+}
