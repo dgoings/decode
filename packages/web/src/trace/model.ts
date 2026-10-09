@@ -33,13 +33,33 @@ function scaleAll(m: Map<string, number>, f: number): void {
   }
 }
 
-/** Add one tick's counts, each multiplied by `f` (its decay since the tick happened). */
+const isCount = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0;
+const isStr = (v: unknown): v is string => typeof v === 'string';
+/** `[string, count]` file entries and `[string, string, count]` edge entries; anything else is skipped. */
+const fileOk = (e: unknown): e is [string, number] => Array.isArray(e) && e.length === 2 && isStr(e[0]) && isCount(e[1]);
+const edgeOk = (e: unknown): e is [string, string, number] =>
+  Array.isArray(e) && e.length === 3 && isStr(e[0]) && isStr(e[1]) && isCount(e[2]);
+const list = (a: unknown): unknown[] => (Array.isArray(a) ? a : []);
+
+/**
+ * A tick from the network (live stream, trace file) made safe for the reducer: null unless `t` is a
+ * finite number >= 0; malformed file / edge entries are dropped. Same rules as the CLI's validateTick.
+ */
+export function cleanTick(v: unknown): TraceTick | null {
+  if (!v || typeof v !== 'object') return null;
+  const r = v as Record<string, unknown>;
+  if (!isCount(r.t) || !Array.isArray(r.files)) return null;
+  return { t: r.t, files: r.files.filter(fileOk), edges: list(r.edges).filter(edgeOk) };
+}
+
+/** Add one tick's counts, each multiplied by `f` (its decay since the tick happened). Bad entries are skipped. */
 export function addTick(heat: Heat, tick: TraceTick, f = 1): void {
   if (f <= 0) return;
-  for (const [p, n] of tick.files) heat.files.set(p, (heat.files.get(p) ?? 0) + n * f);
-  for (const [from, to, n] of tick.edges ?? []) {
-    const k = runtimeKey(from, to);
-    heat.edges.set(k, (heat.edges.get(k) ?? 0) + n * f);
+  for (const e of list(tick.files)) if (fileOk(e)) heat.files.set(e[0], (heat.files.get(e[0]) ?? 0) + e[1] * f);
+  for (const e of list(tick.edges)) {
+    if (!edgeOk(e)) continue;
+    const k = runtimeKey(e[0], e[1]);
+    heat.edges.set(k, (heat.edges.get(k) ?? 0) + e[2] * f);
   }
 }
 
@@ -98,11 +118,15 @@ export interface Totals {
 export function totals(ticks: TraceTick[]): Totals {
   const out: Totals = { files: new Map(), edges: new Map(), peakFile: 0, peakEdge: 0 };
   for (const tick of ticks) {
-    for (const [p, n] of tick.files) {
+    for (const e of list(tick.files)) {
+      if (!fileOk(e)) continue;
+      const [p, n] = e;
       out.files.set(p, (out.files.get(p) ?? 0) + n);
       if (n > out.peakFile) out.peakFile = n;
     }
-    for (const [from, to, n] of tick.edges ?? []) {
+    for (const e of list(tick.edges)) {
+      if (!edgeOk(e)) continue;
+      const [from, to, n] = e;
       const k = runtimeKey(from, to);
       out.edges.set(k, (out.edges.get(k) ?? 0) + n);
       if (n > out.peakEdge) out.peakEdge = n;

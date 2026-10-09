@@ -125,7 +125,8 @@ export async function handleTracePost(store: TraceStore, req: http.IncomingMessa
   const origin = req.headers.origin;
   if (origin && origin !== `http://${req.headers.host}`) return sendJson(res, 403, { error: 'cross-origin trace post' });
   try {
-    store.accept(await readBody(req));
+    const { accepted, dropped } = store.accept(await readBody(req));
+    if (accepted === 0) return sendJson(res, 400, { error: 'no valid tick (each post needs a valid header line and ticks)', dropped });
     res.writeHead(204).end();
   } catch (err) {
     sendJson(res, 400, { error: (err as Error).message });

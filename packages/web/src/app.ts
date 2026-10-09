@@ -482,7 +482,12 @@ export async function startApp(root: HTMLElement, source: DataSource): Promise<A
     console.warn(`codeviz: could not load overlays: ${(err as Error).message}`);
   }
   // Traces too: the selected one registers the `executed` overlay.
-  await player.init();
+  // A broken trace must never take down the snapshot views.
+  try {
+    await player.init();
+  } catch (err) {
+    console.warn(`codeviz: could not load traces: ${(err as Error).message}`);
+  }
   title.textContent = `codeviz · ${app.index.repo}`;
   document.title = `codeviz · ${app.index.repo}`;
   app.picker.setIndex(app.index);

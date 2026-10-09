@@ -156,7 +156,15 @@ export class ApiDataSource implements DataSource {
 
   traceStream(id: string, from: number, onTick: (tick: TraceTick) => void): () => void {
     const es = new EventSource(`${this.base}/traces/${encodeURIComponent(id)}/stream?from=${from}`);
-    es.onmessage = (ev) => onTick(JSON.parse(ev.data as string) as TraceTick);
+    es.onmessage = (ev) => {
+      let tick: TraceTick;
+      try {
+        tick = JSON.parse(ev.data as string) as TraceTick;
+      } catch {
+        return;
+      }
+      onTick(tick);
+    };
     // A reconnect would replay from `from` again; the caller re-subscribes when it needs to.
     es.onerror = () => es.close();
     return () => es.close();

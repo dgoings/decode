@@ -107,6 +107,11 @@ test('traces: list, fetch, live post and SSE stream', async () => {
     const tick = { t: 1000, files: [['a.ts', 3]], edges: [] };
     const posted = await fetch(`${b}/trace`, { method: 'POST', body: `${JSON.stringify(live)}\n${JSON.stringify(tick)}\n` });
     expect(posted.status).toBe(204);
+    // Malformed ticks: no valid tick -> 400; bad entries inside a tick are dropped, not stored.
+    const bad = await fetch(`${b}/trace`, { method: 'POST', body: `${JSON.stringify(live)}\n{"t":100}\n{"t":-1,"files":[]}\n` });
+    expect(bad.status).toBe(400);
+    const partly = await fetch(`${b}/trace`, { method: 'POST', body: `${JSON.stringify(live)}\n{"t":1500,"files":[5,["a.ts",1]]}\n` });
+    expect(partly.status).toBe(204);
     const id = ((await (await fetch(`${b}/api/traces`)).json()) as { id: string; live: boolean }[]).find((t) => t.live)!.id;
     const ctl = new AbortController();
     const stream = await fetch(`${b}/api/traces/${id}/stream?from=0`, { signal: ctl.signal });
@@ -115,6 +120,7 @@ test('traces: list, fetch, live post and SSE stream', async () => {
     let text = '';
     while (!text.includes('data: ')) text += new TextDecoder().decode((await reader.read()).value);
     expect(JSON.parse(text.slice(text.indexOf('data: ') + 6).split('\n')[0]!)).toEqual(tick);
+    expect(store.get(id)!.ticks.map((tk) => tk.files)).toEqual([[['a.ts', 3]], [['a.ts', 1]]]);
     ctl.abort();
   } finally {
     srv.closeAllConnections();

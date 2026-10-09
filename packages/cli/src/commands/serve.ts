@@ -150,28 +150,31 @@ export async function serveCommand(args: string[]): Promise<number> {
     for (const t of traces.list()) {
       const paths = new Set(traces.get(t.id)!.ticks.flatMap((tk) => tk.files.map(([p]) => p)));
       const missing = head ? [...paths].filter((p) => !known.has(p)).length : 0;
-      const sha = head && t.sha !== head.sha ? ` (sha ${t.sha.slice(0, 7)}, HEAD is ${head.sha.slice(0, 7)})` : '';
+      const sha = head && t.sha !== head.sha ? ` (sha ${t.sha.slice(0, 7) || 'unknown'}, HEAD is ${head.sha.slice(0, 7)})` : '';
       log(`trace ${t.id}: ${t.source}, ${t.ticks} ticks over ${(t.durationMs / 1000).toFixed(1)}s, ${paths.size} files${missing ? `, ${missing} not in HEAD` : ''}${sha}`);
     }
+  }
+
+  // Bind the ingest port first, so a busy --trace-port fails before anything is served.
+  let ingestUrl: string | null = null;
+  if (tracePort !== undefined) {
+    const ingest = http.createServer((req, res) => {
+      if (req.method === 'POST') return void handleTracePost(traces, req, res);
+      res.writeHead(200, { 'content-type': 'text/plain' }).end('codeviz serve: live trace ingest\n');
+    });
+    try {
+      await listen(ingest, tracePort);
+    } catch (err) {
+      return fail(`--trace-port ${tracePort}: ${(err as Error).message}`);
+    }
+    ingest.unref();
+    ingestUrl = `http://${HOST}:${tracePort}/trace`;
   }
 
   const started = await startServer({ root, since, port, log, overlays, traces, traceListen });
   if (typeof started === 'string') return fail(started);
   if (traceListen) {
-    let where = `${started.url}/trace`;
-    if (tracePort !== undefined) {
-      const ingest = http.createServer((req, res) => {
-        if (req.method === 'POST') return void handleTracePost(traces, req, res);
-        res.writeHead(200, { 'content-type': 'text/plain' }).end(`codeviz serve: live trace ingest for ${started.url}\n`);
-      });
-      try {
-        await listen(ingest, tracePort);
-      } catch (err) {
-        return fail(`--trace-port ${tracePort}: ${(err as Error).message}`);
-      }
-      ingest.unref();
-      where = `http://${HOST}:${tracePort}/trace`;
-    }
+    const where = ingestUrl ?? `${started.url}/trace`;
     log(`live traces: set CODEVIZ_TRACE_URL=${where} for the Bun preload`);
   }
   console.log(`codeviz serve: ${started.url}  (repo ${repoName(root)}, ${listSnapshots(repoId(root)).length} snapshots cached)`);

@@ -2,7 +2,7 @@
 // whichever is shown). Playback state lives here; the active view's TraceLayer only restyles.
 import type { DataSource, Overlay, Trace, TraceInfo, TraceTick } from '../data.ts';
 import type { TraceLayer } from './layer.ts';
-import { addTick, advance, decayFactor, emptyHeat, heatAt, insertTick, totals, type EdgeClasses, type Heat, type Totals } from './model.ts';
+import { addTick, advance, cleanTick, decayFactor, emptyHeat, heatAt, insertTick, totals, type EdgeClasses, type Heat, type Totals } from './model.ts';
 
 export interface TracePlayer {
   /** The strip; hidden while no trace is loaded. */
@@ -105,6 +105,8 @@ export function createTracePlayer(opts: PlayerOptions): TracePlayer {
   let last = 0;
   let lastHashWrite = 0;
   let loadSeq = 0;
+  /** Shown in the strip instead of the sha warning while set. */
+  let loadError: string | null = null;
 
   const duration = () => (trace?.ticks.length ? trace.ticks[trace.ticks.length - 1]!.t : 0);
   const live = () => !!info?.live;
@@ -121,10 +123,14 @@ export function createTracePlayer(opts: PlayerOptions): TracePlayer {
     followLabel.hidden = !live();
     summaryBtn.setAttribute('aria-pressed', String(summary));
     for (const c of [play, speedSel, scrub, followBox, decayIn]) c.disabled = summary;
-    const mismatch = info && snapSha && snapSha !== 'WORKTREE' && info.sha !== snapSha;
-    warn.hidden = !mismatch;
-    if (mismatch) {
-      warn.textContent = `⚠ trace is from ${info!.sha.slice(0, 7)}, view shows ${snapSha!.slice(0, 7)}`;
+    const traceSha = typeof trace?.header.sha === 'string' ? trace.header.sha : '';
+    const mismatch = info && snapSha && snapSha !== 'WORKTREE' && traceSha !== snapSha;
+    warn.hidden = !mismatch && !loadError;
+    if (loadError) {
+      warn.textContent = loadError;
+      warn.title = '';
+    } else if (mismatch) {
+      warn.textContent = `⚠ trace is from ${traceSha.slice(0, 7) || 'unknown sha'}, view shows ${snapSha!.slice(0, 7)}`;
       warn.title = 'Paths usually still match, but files added or moved since then will not light up.';
     }
     renderLegend();
@@ -233,8 +239,9 @@ export function createTracePlayer(opts: PlayerOptions): TracePlayer {
     syncControls();
   }
 
-  function onLiveTick(tick: TraceTick): void {
-    if (!trace) return;
+  function onLiveTick(raw: TraceTick): void {
+    const tick = cleanTick(raw);
+    if (!trace || !tick) return;
     const i = insertTick(trace.ticks, tick);
     totDirty = true;
     strip.dataset.ticks = String(trace.ticks.length);
@@ -264,14 +271,29 @@ export function createTracePlayer(opts: PlayerOptions): TracePlayer {
       loaded = await p;
     } catch (err) {
       cache.delete(id);
-      warn.hidden = false;
-      warn.textContent = `Could not load trace ${id}: ${(err as Error).message}`;
+      console.warn(`codeviz: could not load trace ${id}: ${(err as Error).message}`);
+      if (seq === loadSeq) {
+        loadError = `trace ${id} could not be loaded`;
+        syncControls();
+      }
       return;
     }
     if (seq !== loadSeq) return;
+    const header = loaded && typeof loaded === 'object' ? loaded.header : undefined;
+    if (!header || typeof header !== 'object' || !Array.isArray(loaded.ticks)) {
+      console.warn(`codeviz: trace ${id} is malformed`);
+      loadError = `trace ${id} could not be loaded`;
+      syncControls();
+      return;
+    }
     target?.clear();
+    loadError = null;
     info = meta;
-    trace = { header: loaded.header, ticks: [...loaded.ticks].sort((a, b) => a.t - b.t) };
+    const ticks = loaded.ticks.map(cleanTick).filter((x): x is TraceTick => x !== null);
+    trace = {
+      header: { ...header, sha: typeof header.sha === 'string' ? header.sha : '', tickMs: Number(header.tickMs) > 0 ? Number(header.tickMs) : 1000 },
+      ticks: ticks.sort((a, b) => a.t - b.t),
+    };
     strip.dataset.ticks = String(trace.ticks.length);
     tot = null;
     totDirty = true;
@@ -291,7 +313,7 @@ export function createTracePlayer(opts: PlayerOptions): TracePlayer {
     const cur = picker.value;
     picker.replaceChildren(
       ...list.map((x) => {
-        const o = el('option', undefined, `${x.id} · ${x.source} · ${x.live ? 'live' : fmtS(x.durationMs)}`);
+        const o = el('option', undefined, `${x.id} · ${x.source} · ${x.live ? 'live' : fmtS(Number(x.durationMs) || 0)}`);
         o.value = x.id;
         return o;
       }),
@@ -303,7 +325,7 @@ export function createTracePlayer(opts: PlayerOptions): TracePlayer {
   async function refreshList(): Promise<void> {
     let next: TraceInfo[];
     try {
-      next = await source.traces();
+      next = validList(await source.traces());
     } catch {
       return;
     }
@@ -347,7 +369,7 @@ export function createTracePlayer(opts: PlayerOptions): TracePlayer {
     el: strip,
     async init() {
       try {
-        list = await source.traces();
+        list = validList(await source.traces());
       } catch (err) {
         console.warn(`codeviz: could not load traces: ${(err as Error).message}`);
         list = [];
@@ -399,9 +421,14 @@ export function createTracePlayer(opts: PlayerOptions): TracePlayer {
   }
 }
 
+/** Entries with a string id (a bad index.json or API answer must not break the strip). */
+function validList(v: unknown): TraceInfo[] {
+  return Array.isArray(v) ? v.filter((x): x is TraceInfo => !!x && typeof x === 'object' && typeof (x as TraceInfo).id === 'string') : [];
+}
+
 /** The live trace that started last, if any. */
 function newestLive(list: TraceInfo[]): TraceInfo | undefined {
-  return list.filter((x) => x.live).sort((a, b) => b.startedAt.localeCompare(a.startedAt))[0];
+  return list.filter((x) => x.live).sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)))[0];
 }
 
 /** Total calls per file over the whole trace, as an overlay color mode. */
