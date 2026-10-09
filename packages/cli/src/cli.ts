@@ -1,6 +1,7 @@
 import { analyzeCommand, analyzeUsage } from './commands/analyze.ts';
 import { compareCommand, compareUsage } from './commands/compare.ts';
 import { exportCommand, exportUsage } from './commands/export.ts';
+import { publishCommand, publishUsage } from './commands/publish.ts';
 import { serveCommand, serveUsage } from './commands/serve.ts';
 import { version } from './version.ts';
 
@@ -11,6 +12,7 @@ Usage:
   ${compareUsage}
   ${serveUsage}
   ${exportUsage}
+  ${publishUsage}
   codeviz help
   codeviz --version`;
 
@@ -19,6 +21,7 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
   compare: compareCommand,
   serve: serveCommand,
   export: exportCommand,
+  publish: publishCommand,
   help: async () => {
     console.log(usage);
     return 0;
