@@ -237,6 +237,7 @@ export function createTracePlayer(opts: PlayerOptions): TracePlayer {
     if (!trace) return;
     const i = insertTick(trace.ticks, tick);
     totDirty = true;
+    strip.dataset.ticks = String(trace.ticks.length);
     if (tot) {
       for (const [, n] of tick.files) tot.peakFile = Math.max(tot.peakFile, n);
       for (const [, , n] of tick.edges ?? []) tot.peakEdge = Math.max(tot.peakEdge, n);
@@ -271,6 +272,7 @@ export function createTracePlayer(opts: PlayerOptions): TracePlayer {
     target?.clear();
     info = meta;
     trace = { header: loaded.header, ticks: [...loaded.ticks].sort((a, b) => a.t - b.t) };
+    strip.dataset.ticks = String(trace.ticks.length);
     tot = null;
     totDirty = true;
     picker.value = id;
@@ -289,7 +291,7 @@ export function createTracePlayer(opts: PlayerOptions): TracePlayer {
     const cur = picker.value;
     picker.replaceChildren(
       ...list.map((x) => {
-        const o = el('option', undefined, `${x.id} · ${x.source}${x.live ? ' · live' : ''} · ${fmtS(x.durationMs)}`);
+        const o = el('option', undefined, `${x.id} · ${x.source} · ${x.live ? 'live' : fmtS(x.durationMs)}`);
         o.value = x.id;
         return o;
       }),
@@ -309,8 +311,11 @@ export function createTracePlayer(opts: PlayerOptions): TracePlayer {
     const added = next.filter((x) => !known.has(x.id));
     list = next;
     if (added.length) fillPicker();
-    // First trace to show up (live capture started after the page loaded): select it.
-    if (!info && list.length) await select((added.find((x) => x.live) ?? list[0]!).id, null);
+    // A trace showed up (live capture started after the page loaded, or the traced app restarted):
+    // select it when nothing is shown yet or when following a live trace.
+    const fresh = newestLive(added);
+    if (!info && list.length) await select((fresh ?? list[0]!).id, null);
+    else if (fresh && info?.live && followBox.checked) await select(fresh.id, null);
   }
 
   play.addEventListener('click', () => setPlaying(!playing));
@@ -353,6 +358,7 @@ export function createTracePlayer(opts: PlayerOptions): TracePlayer {
       const pick =
         list.find((x) => x.id === want) ??
         (want && /^\d+$/.test(want) ? list[Number(want) - 1] : undefined) ??
+        newestLive(list) ??
         list[0];
       const at = Number(opts.readParam('t'));
       if (pick) await select(pick.id, Number.isFinite(at) && opts.readParam('t') !== null ? at : null);
@@ -391,6 +397,11 @@ export function createTracePlayer(opts: PlayerOptions): TracePlayer {
     const n = tt.files.get(id);
     return n ? [['Executed', `${fmt(n)} calls`]] : [];
   }
+}
+
+/** The live trace that started last, if any. */
+function newestLive(list: TraceInfo[]): TraceInfo | undefined {
+  return list.filter((x) => x.live).sort((a, b) => b.startedAt.localeCompare(a.startedAt))[0];
 }
 
 /** Total calls per file over the whole trace, as an overlay color mode. */

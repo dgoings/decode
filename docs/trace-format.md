@@ -1,6 +1,7 @@
 # Runtime trace format (`codeviz-trace` v1)
 
-Written by `codeviz trace browser | import-cpuprofile | collect`. TypeScript types:
+Written by `codeviz trace browser | import-cpuprofile | collect`; read by `codeviz serve --trace` and
+`codeviz export --trace` (see "Runtime traces in the UI" in `docs/design.md`). TypeScript types:
 `packages/cli/src/trace/format.ts` (`TraceHeader`, `TraceTick`, `readTrace`, `parseTrace`).
 
 JSON lines, gzip-compressed when the file name ends in `.gz`.

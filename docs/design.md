@@ -135,6 +135,41 @@ graph and map; files without a value are neutral, and when `higherIsBetter` the
 red ramp is flipped so the bad end is always dark. `codeviz overlay lcov
 <lcov.info> [--out f] [--root dir]` is the reference converter (line coverage %).
 
+### Runtime traces in the UI
+
+`serve --trace <file>` (repeatable) and `export --trace <file>` load recorded
+traces (format: `docs/trace-format.md`); they are kept in memory, never cached.
+`serve --trace-listen` also accepts live ticks as `POST /trace` (the body the Bun
+preload posts: a header line plus tick lines); `--trace-port <n>` adds a second
+listener on that port that takes a POST on any path, so `--trace-port 7357`
+matches the preload's default `CODEVIZ_TRACE_URL`. A POST with an `Origin` header
+from another origin is refused. Each traced process (source + startedAt + sha)
+becomes one live trace.
+
+- `GET /api/traces` -> `[{id, source, sha, repoId?, startedAt, tickMs, ticks, durationMs, live}]`
+  (`ticks` is the count, `durationMs` the last tick's `t`; ids come from the file name, or
+  `live-<source>-<HHMMSS>`).
+- `GET /api/traces/:id` -> `{header, ticks}` (gzip when accepted).
+- `GET /api/traces/:id/stream?from=<n>` -> `text/event-stream`, one `data: <tick JSON>` event
+  per tick from index `n`, then each new tick of a live trace (a recorded trace's stream ends).
+- Export writes `snapshots/traces/index.json` (same list, `live: false`) and `<id>.json.gz`.
+
+The Graph and Map views show a Trace strip when any trace exists: trace picker,
+play/pause, speed (0.5x-4x), scrubber, Follow (live traces), decay (how long a
+call stays lit) and Summary. Hash: `trace=<id>` (or `trace=<n>`, the n-th trace),
+`t=<ms>`, `summary=1`. Playback is a reducer over ticks (`web/src/trace/model.ts`):
+per-file and per-edge heat, incremented by tick counts and decayed exponentially
+per animation frame (about 5% left after the decay time); a jump (scrub, hidden
+tab) recomputes heat from the ticks within four decay windows. Heat is drawn on a
+canvas over the Cytoscape canvas in its pan/zoom transform (restyling Cytoscape
+elements per frame is too slow on compound graphs): lit nodes, pulsing import edges
+in orange, and runtime calls with no import edge in that direction as dashed purple
+curves. Collapsed groups sum their files. Summary freezes playback, restyles the
+graph once (import edges that carried calls, ones that never did, runtime-only edges
+as real edges) with counts over the file-level import graph, and registers the
+`executed` overlay (total calls per file), which also shows on the treemap. A trace
+whose sha differs from the shown snapshot gets a warning in the strip.
+
 ## Repo layout
 
 ```
