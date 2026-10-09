@@ -11,17 +11,20 @@
 //   CODEVIZ_TRACE_SAMPLE   capture the caller file from new Error().stack on 1 in N calls (default 10)
 //   CODEVIZ_TRACE_SHA      override `git rev-parse HEAD`
 //
-// Instrumentation (POC, regex-level, no AST): for each matching module the onLoad hook
-//  - counts one "load" call for the file when the module finishes evaluating,
-//  - rewrites top-level `const NAME =` to `let   NAME =` (same length, so line/column positions hold),
-//  - appends `NAME = wrap(NAME)` for every top-level function declaration and top-level const/let
-//    binding (only actual non-class functions get wrapped). The wrapper counts calls per function and
-//    on a random 1-in-N call records caller-file -> this-file from the stack (weighted ×N in the trace).
-// Calls made through references captured before the module finished evaluating are not counted, and
+// Instrumentation: for each matching module the onLoad hook transpiles TS/TSX to JS with
+// Bun.Transpiler, parses that with acorn, and splices one `__cv_h(<id>);` call as the first statement
+// of every function body (function declarations/expressions, arrows, methods, class-field arrows;
+// expression-bodied arrows become `(__cv_h(<id>), expr)`). No binding is renamed, moved or wrapped,
+// so function identity, `const`, own properties and toString() are unchanged. It also appends one
+// module-load hit. `__cv_h` counts calls per function and, on a random 1-in-N call, records
+// caller-file -> this-file from new Error().stack (weighted ×N in the trace).
+// If transpiling or parsing fails, the module is loaded untouched (one stderr line) and not counted.
 // JavaScriptCore drops the caller frame of strict-mode tail calls (`return f(x)`), so those edges are missed.
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { appendFileSync } from 'node:fs';
+import { parse } from 'acorn';
+import { appendFileSync, readFileSync, realpathSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 const B = (globalThis as any).Bun;
 const g = globalThis as any;
@@ -39,7 +42,13 @@ function setup(): void {
       return undefined;
     }
   };
-  const ROOT: string = (env.CODEVIZ_TRACE_ROOT ?? run(['rev-parse', '--show-toplevel'], process.cwd()) ?? process.cwd()).replace(/\/$/, '');
+  const rawRoot: string = env.CODEVIZ_TRACE_ROOT ?? run(['rev-parse', '--show-toplevel'], process.cwd()) ?? process.cwd();
+  let ROOT: string = resolve(rawRoot);
+  try {
+    ROOT = realpathSync(ROOT); // Bun reports real paths to onLoad
+  } catch {
+    // keep the resolved path
+  }
   const relFilter = env.CODEVIZ_TRACE_FILTER ?? '^src/.*\\.tsx?$';
   const relRe = new RegExp(relFilter);
   const TICK = Number(env.CODEVIZ_TRACE_TICK_MS) || 1000;
@@ -59,7 +68,7 @@ function setup(): void {
   const counters: Counter[] = [];
   const loads = new Map<string, number>();
   const edges = new Map<string, number>();
-  const stats = { modules: 0, wrapped: 0, calls: 0, samples: 0, sampleMs: 0, transformMs: 0, flushMs: 0, gitMs: 0, ticks: 0, postErrors: 0 };
+  const stats = { modules: 0, functions: 0, calls: 0, samples: 0, sampleMs: 0, transformMs: 0, flushMs: 0, gitMs: 0, ticks: 0, postErrors: 0 };
   const started = Date.now();
   let header: string | undefined;
 
@@ -94,11 +103,17 @@ function setup(): void {
     stats.samples++;
     const lines = (new Error().stack ?? '').split('\n');
     if (DEBUG && stats.samples <= 5) console.error(`[codeviz-trace] sample for ${callee}:\n${lines.slice(0, 8).join('\n')}`);
+    let sawCallee = false;
     for (const line of lines) {
       const m = /\(?((?:file:\/\/)?\/[^()]+?):\d+:\d+\)?\s*$/.exec(line);
       if (!m) continue;
       const path = m[1]!.replace(/^file:\/\//, '');
       if (path === harnessFile) continue;
+      // First non-harness frame is the instrumented function itself; the next one is its caller.
+      if (!sawCallee) {
+        sawCallee = true;
+        continue;
+      }
       const rel = relOf(path);
       if (rel && rel !== callee) edges.set(`${rel}\0${callee}`, (edges.get(`${rel}\0${callee}`) ?? 0) + SAMPLE);
       break; // only the immediate caller frame
@@ -106,63 +121,99 @@ function setup(): void {
     stats.sampleMs += performance.now() - t0;
   };
 
-  const wrap = (fn: any, file: string, name: string): any => {
-    if (typeof fn !== 'function' || fn.__codeviz) return fn;
-    let src = '';
-    try {
-      src = Function.prototype.toString.call(fn);
-    } catch {
-      return fn;
-    }
-    if (/^class\b/.test(src)) return fn;
-    const c: Counter = { file, name, n: 0 };
-    counters.push(c);
-    stats.wrapped++;
-    const w = function (this: unknown, ...args: unknown[]) {
-      c.n++;
-      // Random (not every-Nth) so a fixed call pattern per request cannot alias onto one function.
-      if (SAMPLE === 1 || Math.random() * SAMPLE < 1) callerFile(file);
-      // eslint-disable-next-line prefer-rest-params
-      return new.target ? Reflect.construct(fn, args, new.target) : fn.apply(this, args);
-    };
-    try {
-      Object.defineProperty(w, 'name', { value: fn.name });
-      Object.defineProperty(w, 'length', { value: fn.length });
-      Object.defineProperty(w, '__codeviz', { value: true });
-      if (fn.prototype) w.prototype = fn.prototype;
-      Object.setPrototypeOf(w, fn); // static props read through
-    } catch {
-      // keep the plain wrapper
-    }
-    return w;
+  const hit = (id: number): void => {
+    const c = counters[id]!;
+    c.n++;
+    // Random (not every-Nth) so a fixed call pattern per request cannot alias onto one function.
+    if (SAMPLE === 1 || Math.random() * SAMPLE < 1) callerFile(c.file);
   };
 
-  const instrument = (src: string, rel: string): string => {
-    const names = new Set<string>();
-    for (const m of src.matchAll(/^(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)\s*[<(]/gm)) names.add(m[1]!);
-    const out = src.replace(/^(export\s+)?const(\s+)([A-Za-z_$][\w$]*)(?=\s*[:=])/gm, (_all, ex: string | undefined, ws: string, name: string) => {
-      names.add(name);
-      return `${ex ?? ''}let  ${ws}${name}`;
-    });
-    for (const m of out.matchAll(/^(?:export\s+)?let\s+([A-Za-z_$][\w$]*)\s*[:=]/gm)) names.add(m[1]!);
-    const f = JSON.stringify(rel);
-    let tail = `\n;globalThis.__codevizTrace?.load(${f});`;
-    for (const n of names) tail += `\ntry { ${n} = globalThis.__codevizTrace.wrap(${n}, ${f}, ${JSON.stringify(n)}); } catch {}`;
-    return out + tail + '\n';
+  const transpilers = new Map<string, any>();
+  const transpiler = (loader: string): any => {
+    let t = transpilers.get(loader);
+    if (!t) {
+      let tsconfig: string | undefined;
+      try {
+        tsconfig = readFileSync(`${ROOT}/tsconfig.json`, 'utf8');
+      } catch {
+        tsconfig = undefined;
+      }
+      try {
+        t = new B.Transpiler({ loader, target: 'bun', ...(tsconfig ? { tsconfig } : {}) });
+      } catch {
+        t = new B.Transpiler({ loader, target: 'bun' });
+      }
+      transpilers.set(loader, t);
+    }
+    return t;
+  };
+
+  const nameOf = (node: any, parent: any): string => {
+    if (node.id?.name) return node.id.name;
+    if (!parent) return '<anonymous>';
+    const key = (k: any): string | undefined => (k?.type === 'Identifier' || k?.type === 'PrivateIdentifier' ? k.name : k?.type === 'Literal' ? String(k.value) : undefined);
+    if (parent.type === 'VariableDeclarator' && parent.id?.type === 'Identifier') return parent.id.name;
+    if (parent.type === 'AssignmentExpression') return parent.left.type === 'Identifier' ? parent.left.name : (key(parent.left.property) ?? '<anonymous>');
+    if (parent.type === 'MethodDefinition' || parent.type === 'Property' || parent.type === 'PropertyDefinition') {
+      const k = key(parent.key) ?? '<computed>';
+      return parent.kind === 'get' || parent.kind === 'set' ? `${parent.kind} ${k}` : k;
+    }
+    if (parent.type === 'ExportDefaultDeclaration') return 'default';
+    return '<anonymous>';
+  };
+
+  /** Transpile to JS, then splice a counter call into every function body (offsets spliced back to front). */
+  const instrument = (src: string, rel: string, loader: string): string => {
+    const js: string = loader === 'js' ? src : transpiler(loader).transformSync(src);
+    const ast = parse(js, { ecmaVersion: 'latest', sourceType: 'module', allowHashBang: true, allowAwaitOutsideFunction: true });
+    const edits: [number, string][] = [];
+    const visit = (node: any, parent: any): void => {
+      if (!node || typeof node.type !== 'string') return;
+      if (node.type === 'FunctionDeclaration' || node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression') {
+        const id = counters.push({ file: rel, name: nameOf(node, parent), n: 0 }) - 1;
+        stats.functions++;
+        const body = node.body;
+        if (body.type === 'BlockStatement') {
+          let at = body.start + 1;
+          for (const st of body.body) {
+            if (st.type === 'ExpressionStatement' && st.directive !== undefined) at = st.end;
+            else break;
+          }
+          edits.push([at, `__cv_h(${id});`]);
+        } else {
+          edits.push([body.start, `(__cv_h(${id}), `], [body.end, ')']);
+        }
+      }
+      for (const k in node) {
+        if (k === 'type' || k === 'start' || k === 'end') continue;
+        const v = node[k];
+        if (Array.isArray(v)) for (const c of v) visit(c, node);
+        else if (v && typeof v === 'object' && typeof v.type === 'string') visit(v, node);
+      }
+    };
+    visit(ast, undefined);
+    // Back to front so earlier offsets stay valid; ties keep insertion order reversed (')' after '(…').
+    edits.sort((a, b) => b[0] - a[0]);
+    let out = js;
+    for (const [at, text] of edits) out = out.slice(0, at) + text + out.slice(at);
+    // Same line as the first statement: no line shift for stack traces.
+    return `var __cv_h=globalThis.__codevizTrace.hit;${out}\n;globalThis.__codevizTrace.load(${JSON.stringify(rel)});\n`;
   };
 
   const flush = async (final = false): Promise<void> => {
     const t0 = performance.now();
     const files = new Map<string, number>(loads);
     loads.clear();
-    const fns: [string, string, number][] = [];
+    const byFn = new Map<string, number>();
     for (const c of counters) {
       if (!c.n) continue;
       stats.calls += c.n;
       files.set(c.file, (files.get(c.file) ?? 0) + c.n);
-      fns.push([c.file, c.name, c.n]);
+      const k = `${c.file}\0${c.name}`;
+      byFn.set(k, (byFn.get(k) ?? 0) + c.n);
       c.n = 0;
     }
+    const fns = [...byFn].map(([k, n]) => [...(k.split('\0') as [string, string]), n] as [string, string, number]);
     const edgeList: [string, string, number][] = [...edges].map(([k, n]) => {
       const [a, b] = k.split('\0') as [string, string];
       return [a, b, n];
@@ -191,10 +242,9 @@ function setup(): void {
 
   // Rough per-call cost of the counting wrapper (excluding stack samples, timed separately).
   const calibrate = (): number => {
+    const id = counters.push({ file: '(calibration)', name: 'noop', n: 0 }) - 1;
     const noop = (x: number) => x + 1;
-    const wrapped = wrap(noop, '(calibration)', 'noop');
-    counters.pop();
-    stats.wrapped--;
+    const counted = (x: number) => (hit(id), x + 1);
     const N = 200_000;
     let x = 0;
     let t = performance.now();
@@ -203,11 +253,12 @@ function setup(): void {
     const s = stats.samples;
     const sm = stats.sampleMs;
     t = performance.now();
-    for (let i = 0; i < N; i++) x = wrapped(x);
+    for (let i = 0; i < N; i++) x = counted(x);
     const total = performance.now() - t - (stats.sampleMs - sm);
     stats.samples = s;
     stats.sampleMs = sm;
     edges.clear();
+    counters.pop();
     return Math.max(0, ((total - base) / N) * 1e6); // ns per call
   };
 
@@ -220,13 +271,13 @@ function setup(): void {
     const overhead = stats.gitMs + stats.transformMs + countingMs + stats.sampleMs + stats.flushMs;
     const uptime = Date.now() - started;
     console.error(
-      `[codeviz-trace] ${stats.modules} modules, ${stats.wrapped} functions wrapped, ${stats.calls} calls, ${stats.samples} stack samples (1/${SAMPLE}), ${stats.ticks} ticks -> ${OUT_FILE ?? OUT_URL}\n` +
+      `[codeviz-trace] ${stats.modules} modules, ${stats.functions} functions instrumented, ${stats.calls} calls, ${stats.samples} stack samples (1/${SAMPLE}), ${stats.ticks} ticks -> ${OUT_FILE ?? OUT_URL}\n` +
         `[codeviz-trace] overhead est. ${overhead.toFixed(1)} ms over ${(uptime / 1000).toFixed(1)} s uptime: git ${stats.gitMs.toFixed(1)} ms, transform ${stats.transformMs.toFixed(1)} ms, counting ${countingMs.toFixed(1)} ms (~${ns.toFixed(0)} ns/call), stack sampling ${stats.sampleMs.toFixed(1)} ms, flush ${stats.flushMs.toFixed(1)} ms`,
     );
   };
 
   g.__codevizTrace = {
-    wrap,
+    hit,
     load(rel: string) {
       loads.set(rel, (loads.get(rel) ?? 0) + 1);
     },
@@ -243,10 +294,20 @@ function setup(): void {
         if (!rel || !relRe.test(rel)) return { contents, loader };
         ensureHeader();
         const t0 = performance.now();
-        stats.modules++;
-        const out = instrument(contents, rel);
-        stats.transformMs += performance.now() - t0;
-        return { contents: out, loader };
+        const before = counters.length;
+        try {
+          const out = instrument(contents, rel, loader);
+          stats.modules++;
+          return { contents: out, loader: 'js' };
+        } catch (err) {
+          // Never turn a loadable module into a failing one: drop this file's counters, load it untouched.
+          stats.functions -= counters.length - before;
+          counters.length = before;
+          console.error(`[codeviz-trace] not instrumenting ${rel}: ${(err as Error).message}`);
+          return { contents, loader };
+        } finally {
+          stats.transformMs += performance.now() - t0;
+        }
       });
     },
   });
