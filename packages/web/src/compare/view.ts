@@ -1,6 +1,7 @@
 import type { FileDelta, FileEntry } from '@codeviz/core';
 import { WORKTREE, type DataSource, type Snapshot, type SnapshotDiff, type SnapshotIndex } from '../data.ts';
 import { buildCompareGraphModel } from '../graph/model.ts';
+import type { HideTarget } from '../hidden.ts';
 import { createGraphView, type GraphView } from '../graph/view.ts';
 import { createTreemap, type Treemap } from '../treemap.ts';
 import { deltaFiles, sliceFor } from './model.ts';
@@ -14,8 +15,8 @@ export interface CompareDeps {
   writeParam(key: string, value: string): void;
   /** View-level filter (hidden files) applied to the fetched diff and head before rendering. */
   filter(diff: SnapshotDiff, head: Snapshot): { diff: SnapshotDiff; head: Snapshot };
-  /** Right-click on a file block or file node. */
-  onFileContextMenu(path: string, ev: MouseEvent): void;
+  /** Right-click on a file or directory (treemap block/header, graph node/compound). */
+  onContextMenu(target: HideTarget, ev: MouseEvent): void;
   /** Extra element appended to the summary bar on each render. */
   barExtra(): Node;
 }
@@ -228,7 +229,7 @@ export function createCompareView(root: HTMLElement, deps: CompareDeps): Compare
     if (!tmLegend.firstChild) tmLegend.replaceChildren(sliceLegend());
     if (!treemap) {
       treemap = createTreemap(tmBox, {
-        onFileContextMenu: deps.onFileContextMenu,
+        onContextMenu: deps.onContextMenu,
         style: {
           fill: (f) => (state?.deltas.get(f.path)?.status === 'removed' ? 'url(#tm-removed)' : NEUTRAL_FILL),
           className: (f) => {
@@ -246,7 +247,7 @@ export function createCompareView(root: HTMLElement, deps: CompareDeps): Compare
     if (!state) return;
     const { diff, head } = state;
     edgeTitle.textContent = `Dependency graph · +${fmt(diff.edges.added.length)} / −${fmt(diff.edges.removed.length)} edges`;
-    if (!graph) graph = createGraphView(graphBox, { onNodeContextMenu: deps.onFileContextMenu });
+    if (!graph) graph = createGraphView(graphBox, { onContextMenu: deps.onContextMenu });
     graph.render(head, buildCompareGraphModel(head, diff));
     graph.setChangedOnly(edgesChangedOnly.checked);
     graphNeedsFit = true;

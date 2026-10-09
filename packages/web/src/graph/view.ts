@@ -1,6 +1,7 @@
 import cytoscape, { type Core, type ElementDefinition, type NodeSingular, type EdgeSingular, type Position } from 'cytoscape';
 import fcose from 'cytoscape-fcose';
 import type { Snapshot } from '../data.ts';
+import type { HideTarget } from '../hidden.ts';
 import { tierBadges } from '../refpicker.ts';
 import { colorScale, metric, type ColorMode, type ColorScale } from '../treemap.ts';
 import type { FileEntry } from '@codeviz/core';
@@ -216,8 +217,8 @@ function textOn(bg: string): string {
 
 /** Dependency graph: directories as collapsible compound nodes, cycle edges in red, cycle list on the side. */
 export interface GraphViewOptions {
-  /** Right-click on a file node (not groups, modules, or ghosts). */
-  onNodeContextMenu?(path: string, ev: MouseEvent): void;
+  /** Right-click on a file node or a directory compound (not package modules or ghosts). */
+  onContextMenu?(target: HideTarget, ev: MouseEvent): void;
   /** Extra element appended to the summary bar on each render. */
   barExtra?(): Node;
   /** 'boxes' (map view): files and collapsed folders drawn as rectangles sized by code. Default 'dots'. */
@@ -615,9 +616,11 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions =
   cy.on('cxttap', 'node', (e) => {
     const n = model?.nodes.get((e.target as NodeSingular).id());
     const ev = e.originalEvent as MouseEvent | undefined;
-    if (!n || n.type !== 'leaf' || n.kind !== 'file' || n.ghost || !ev || !opts.onNodeContextMenu) return;
+    if (!n || n.ghost || !ev || !opts.onContextMenu) return;
+    const kind = n.type === 'leaf' && n.kind === 'file' ? 'file' : n.type === 'group' && n.kind === 'dir' ? 'dir' : null;
+    if (!kind) return;
     tip.hidden = true;
-    opts.onNodeContextMenu(n.id, ev);
+    opts.onContextMenu({ kind, path: n.id }, ev);
   });
   cy.on('dbltap', 'node', (e) => toggle((e.target as NodeSingular).id()));
 

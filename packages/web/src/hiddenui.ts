@@ -1,9 +1,9 @@
 // Right-click "Hide <file>" menu and the "N hidden" chip + popover for the summary bars.
-import type { HiddenStore } from './hidden.ts';
+import { hiddenEntry, type HiddenStore, type HideTarget } from './hidden.ts';
 
 export interface HiddenUI {
-  /** Open the context menu for `path` at viewport coordinates. */
-  openMenu(path: string, x: number, y: number): void;
+  /** Open the context menu for a file or folder at viewport coordinates. */
+  openMenu(target: HideTarget, x: number, y: number): void;
   /** A fresh "N hidden" chip for a summary bar (hidden when nothing is hidden). */
   chip(): HTMLElement;
 }
@@ -79,16 +79,17 @@ export function createHiddenUI(store: HiddenStore): HiddenUI {
   });
 
   return {
-    openMenu(path, x, y) {
+    openMenu(target, x, y) {
       pop.hidden = true;
+      const entry = hiddenEntry(target);
       const item = document.createElement('button');
       item.type = 'button';
       item.setAttribute('role', 'menuitem');
-      item.textContent = `Hide ${basename(path)}`;
-      item.title = path;
+      item.textContent = `Hide ${basename(target.path)}${target.kind === 'dir' ? '/' : ''}`;
+      item.title = entry;
       item.addEventListener('click', () => {
         menu.hidden = true;
-        store.add(path);
+        store.add(entry);
       });
       menu.replaceChildren(item);
       place(menu, x, y);
@@ -101,7 +102,7 @@ export function createHiddenUI(store: HiddenStore): HiddenUI {
       b.className = 'hidden-chip';
       b.textContent = `${n} hidden`;
       b.hidden = n === 0;
-      b.title = 'Files hidden from the analysis';
+      b.title = 'Files and folders hidden from the analysis';
       b.addEventListener('click', () => {
         if (!pop.hidden) {
           pop.hidden = true;
