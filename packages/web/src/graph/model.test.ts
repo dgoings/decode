@@ -47,6 +47,22 @@ test('buildGraphModel nests files under dir groups and creates skipped intermedi
   expect([...groupsBelow(m, 1)].sort()).toEqual(['src/a', 'src/b']);
 });
 
+test('buildGraphModel allFiles adds sized files without edges or modules, nesting new dir groups', () => {
+  const extra = {
+    ...snap,
+    files: [...snap.files, { path: 'internal/cli/run.go', code: 40 }, { path: 'internal/db.go', loc: 9 }, { path: 'docs/old.md' }],
+  } as Snapshot;
+  expect(buildGraphModel(extra).nodes.has('internal/cli/run.go')).toBe(false);
+  const m = buildGraphModel(extra, { allFiles: true });
+  const parent = (id: string) => m.nodes.get(id)?.parent;
+  expect(parent('internal/cli/run.go')).toBe('internal/cli');
+  expect(parent('internal/cli')).toBe('internal');
+  expect(parent('internal/db.go')).toBe('internal');
+  expect(m.nodes.has('docs/old.md')).toBe(false); // no size info
+  expect(m.nodes.get('internal')).toMatchObject({ type: 'group', fileCount: 2, code: 40 });
+  expect(m.edges.length).toBe(7);
+});
+
 test('aggregateEdges re-targets edges to the collapsed group, merges counts, drops self-loops', () => {
   const m = buildGraphModel(snap);
   const cycles = findCycles(m);
