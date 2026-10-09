@@ -22,4 +22,8 @@ export const goConfig: LanguageConfig = {
   },
   logicalNodes: ['binary_expression'],
   logicalOperators: ['&&', '||'],
+  // Single and grouped imports both yield import_spec; path is an interpreted
+  // (or, rarely, raw) string literal.
+  importQuery: '(import_spec path: (_) @spec (#set! kind "import"))',
+  importCaptures: { specifier: 'spec' },
 };

@@ -102,7 +102,9 @@ export const isOpaqueKind = (kind: string): boolean => kind !== 'file' && kind !
 export interface GraphModelOptions {
   /**
    * Also add every file with size info (`code` or `loc`, the treemap's rule) as a leaf under its
-   * directory groups, edges or not (map view). Files owned by an opaque module stay inside it.
+   * directory groups, edges or not (map view), whatever module owns it. Opaque modules that own
+   * files are not drawn as nodes: each maps to the directory group of its files (a Go `x` and
+   * `x_test` share one), and module-level edges between them become edges between those groups.
    */
   allFiles?: boolean;
 }
@@ -161,6 +163,21 @@ export function buildGraphModel(snap: Snapshot, opts: GraphModelOptions = {}): G
       }
     }
   }
+  // allFiles: opaque modules with files -> their files' common directory ('' = repo root).
+  const dirOfModule = new Map<string, string>();
+  if (opts.allFiles) {
+    for (const [id, m] of opaque) {
+      if (!m.files.length) continue;
+      let common = dirname(m.files[0]!);
+      for (const f of m.files) while (common && dirname(f) !== common && !dirname(f).startsWith(common + '/')) common = dirname(common);
+      dirOfModule.set(id, common);
+    }
+    for (const id of dirOfModule.keys()) {
+      opaque.delete(id);
+      owner.delete(id);
+    }
+    for (const [id, o] of owner) if (dirOfModule.has(o)) owner.delete(id);
+  }
   const nesting = new Set(owner.values());
   const ensureOpaqueGroup = (moduleId: string): string => {
     const gid = `${moduleId}/`;
@@ -205,7 +222,17 @@ export function buildGraphModel(snap: Snapshot, opts: GraphModelOptions = {}): G
 
   const out: GraphEdge[] = [];
   const seen = new Set<string>();
-  for (const e of edges) {
+  for (const raw of edges) {
+    let e = raw;
+    if (e.level === 'module' && (dirOfModule.has(e.from) || dirOfModule.has(e.to))) {
+      // Test packages (Go `x_test`) share their package's folder; their edges would only add test-only cycles.
+      if (e.from.endsWith('_test')) continue;
+      const from = dirOfModule.get(e.from) ?? e.from;
+      const to = dirOfModule.get(e.to) ?? e.to;
+      // A repo-root package has no directory group to attach to; its edges are not drawn here.
+      if (!from || !to) continue;
+      e = { ...e, from, to };
+    }
     if (e.from === e.to) continue;
     if (e.level === 'module') {
       // Endpoints are module ids: opaque ones already exist; dir modules are groups.

@@ -63,6 +63,50 @@ test('buildGraphModel allFiles adds sized files without edges or modules, nestin
   expect(m.edges.length).toBe(7);
 });
 
+test('allFiles with Go package modules: file boxes under dir groups, module edges between the dir groups', () => {
+  const P = 'example.com/x';
+  const mod = (from: string, to: string) => ({ from, to, kind: 'import', level: 'module' as const });
+  const go = {
+    files: [
+      { path: 'cmd/app/main.go', code: 10 },
+      { path: 'internal/a/a.go', code: 5 },
+      { path: 'internal/a/a_test.go', code: 3 },
+      { path: 'internal/b/b.go', code: 2 },
+    ],
+    modules: [
+      { id: `${P}/cmd/app`, kind: 'package', files: ['cmd/app/main.go'] },
+      { id: `${P}/internal/a`, kind: 'package', files: ['internal/a/a.go'] },
+      { id: `${P}/internal/a_test`, kind: 'package', files: ['internal/a/a_test.go'] },
+      { id: `${P}/internal/b`, kind: 'package', files: ['internal/b/b.go'] },
+    ],
+    edges: [
+      mod(`${P}/cmd/app`, `${P}/internal/a`),
+      mod(`${P}/internal/a`, `${P}/internal/b`),
+      mod(`${P}/internal/a_test`, `${P}/internal/a`), // same directory: dropped
+      mod(`${P}/internal/a_test`, `${P}/cmd/app`), // test-only: dropped in allFiles mode
+    ],
+  } as unknown as Snapshot;
+
+  // Dots mode keeps opaque package nodes.
+  expect(buildGraphModel(go).nodes.get(`${P}/internal/a`)).toMatchObject({ type: 'leaf', kind: 'package' });
+
+  const m = buildGraphModel(go, { allFiles: true });
+  const parent = (id: string) => m.nodes.get(id)?.parent;
+  expect(parent('cmd/app/main.go')).toBe('cmd/app');
+  expect(parent('internal/a/a.go')).toBe('internal/a');
+  expect(parent('internal/a/a_test.go')).toBe('internal/a');
+  expect(parent('internal/b/b.go')).toBe('internal/b');
+  expect([...m.nodes.keys()].some((id) => id.startsWith(P))).toBe(false);
+  expect(m.edges.map((e) => [e.from, e.to, e.level])).toEqual([
+    ['cmd/app', 'internal/a', 'module'],
+    ['internal/a', 'internal/b', 'module'],
+  ]); // a_test edges are dropped in allFiles mode (no test-only folder cycles)
+  expect(findCycles(m).components).toEqual([]);
+  // Collapsing `internal` aggregates its edges onto it.
+  const v = aggregateEdges(m, new Set(['internal']));
+  expect(v.edges.map((e) => [e.from, e.to, e.count]).sort()).toEqual([['cmd/app', 'internal', 1]]);
+});
+
 test('aggregateEdges re-targets edges to the collapsed group, merges counts, drops self-loops', () => {
   const m = buildGraphModel(snap);
   const cycles = findCycles(m);
