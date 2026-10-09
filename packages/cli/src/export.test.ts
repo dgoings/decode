@@ -98,8 +98,18 @@ test('export writes the web UI, gzip snapshots, index and precomputed compares; 
 
   // Non-empty dir is refused without --overwrite, accepted with it.
   expect(await exportCommand([out, 'HEAD', '--since', '1y', '--web-dir', web])).toBe(1);
+  fs.writeFileSync(path.join(out, 'assets', 'important.txt'), 'keep me');
+  fs.writeFileSync(path.join(out, 'README.md'), 'keep me too');
   expect(await exportCommand([out, 'HEAD', '--since', '1y', '--web-dir', web, '--overwrite'])).toBe(0);
   expect(fs.readdirSync(path.join(out, 'snapshots')).sort()).toEqual([`${head}.json.gz`, 'index.json']);
+  expect(fs.readFileSync(path.join(out, 'assets', 'important.txt'), 'utf8')).toBe('keep me');
+  expect(fs.existsSync(path.join(out, 'README.md'))).toBe(true);
+  expect(fs.existsSync(path.join(out, 'assets', 'app.js'))).toBe(true);
+
+  // Exporting onto (or above) the web build is refused and leaves it intact.
+  expect(await exportCommand([web, 'HEAD', '--since', '1y', '--web-dir', web, '--overwrite'])).toBe(1);
+  expect(await exportCommand([tmp, 'HEAD', '--since', '1y', '--web-dir', web, '--overwrite'])).toBe(1);
+  expect(fs.readdirSync(web).sort()).toEqual(['assets', 'index.html']);
 
   const refused = path.join(tmp, 'refused');
   expect(await exportCommand([refused, 'HEAD', 'WORKTREE', '--web-dir', web])).toBe(1);

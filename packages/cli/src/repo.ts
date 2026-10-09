@@ -13,9 +13,22 @@ export function repoName(root: string): string {
   return basename(git(root, ['rev-parse', '--show-toplevel']));
 }
 
+/** Drop user:password@ from URL-style remotes (tokens in https remotes). scp-style user@host:path is left alone. */
+export function redactOrigin(url: string): string {
+  try {
+    const u = new URL(url);
+    if (!u.username && !u.password) return url;
+    u.username = '';
+    u.password = '';
+    return u.toString();
+  } catch {
+    return url;
+  }
+}
+
 export function originUrl(root: string): string {
   try {
-    return git(root, ['remote', 'get-url', 'origin']);
+    return redactOrigin(git(root, ['remote', 'get-url', 'origin']));
   } catch {
     return '';
   }

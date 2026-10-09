@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { diffSnapshots, encodeSnapshot, type Snapshot } from '@codeviz/core';
@@ -7,7 +7,7 @@ import { analyzeRef } from './analyze.ts';
 import { listSnapshots, readSnapshot, type SnapshotSummary } from './cache.ts';
 import { compareRenames } from './compare.ts';
 import { resolveRef } from './refs.ts';
-import { repoId, repoName } from './repo.ts';
+import { redactOrigin, repoId, repoName } from './repo.ts';
 import { findWebDir } from './server.ts';
 import { version } from './version.ts';
 
@@ -38,6 +38,14 @@ export interface ExportResult {
   pairs: number;
   pairsSkipped: boolean;
   bytes: number;
+}
+
+/** Relative paths of every file under `dir`. */
+function filesUnder(dir: string, prefix = ''): string[] {
+  return readdirSync(path.join(dir, prefix), { withFileTypes: true }).flatMap((e) => {
+    const rel = path.join(prefix, e.name);
+    return e.isDirectory() ? filesUnder(dir, rel) : [rel];
+  });
 }
 
 function dirBytes(dir: string): number {
@@ -75,14 +83,19 @@ export async function exportSite(opts: ExportOptions): Promise<ExportResult> {
   }
   if (unknown.length) throw new Error(`unknown git ref${unknown.length > 1 ? 's' : ''}: ${unknown.join(', ')}`);
 
-  const dir = path.resolve(opts.dir);
+  const webDirFound = opts.webDir ?? findWebDir();
+  if (!webDirFound || !existsSync(path.join(webDirFound, 'index.html'))) {
+    throw new Error('the web UI is not built (no index.html found); run `bun run build` in the codeviz checkout');
+  }
+  const webDir = realpathSync(webDirFound);
+  const dir = existsSync(opts.dir) ? realpathSync(opts.dir) : path.resolve(opts.dir);
+  // Covers the codeviz checkout root too, since the web build lives inside it.
+  if (webDir === dir || webDir.startsWith(dir + path.sep)) {
+    throw new Error(`refusing to export into ${dir}: it contains the codeviz web build (${webDir})`);
+  }
   if (existsSync(dir)) {
     if (!statSync(dir).isDirectory()) throw new Error(`${dir} exists and is not a directory`);
     if (readdirSync(dir).length > 0 && !opts.overwrite) throw new Error(`${dir} is not empty (use --overwrite)`);
-  }
-  const webDir = opts.webDir ?? findWebDir();
-  if (!webDir || !existsSync(path.join(webDir, 'index.html'))) {
-    throw new Error('the web UI is not built (no index.html found); run `bun run build` in the codeviz checkout');
   }
 
   // Collect snapshots: given refs (analyzed when missing) or every cached one.
@@ -114,7 +127,12 @@ export async function exportSite(opts: ExportOptions): Promise<ExportResult> {
   // Write. Only paths inside `dir` are touched.
   mkdirSync(dir, { recursive: true });
   if (opts.overwrite) {
-    for (const name of [...readdirSync(webDir), 'snapshots']) rmSync(path.join(dir, name), { recursive: true, force: true });
+    // Only what a previous export wrote: snapshots/ and files at the web build's own paths. Never whole dirs.
+    rmSync(path.join(dir, 'snapshots'), { recursive: true, force: true });
+    for (const rel of filesUnder(webDir)) {
+      const target = path.join(dir, rel);
+      if (existsSync(target) && statSync(target).isFile()) rmSync(target);
+    }
   }
   cpSync(webDir, dir, { recursive: true });
   const snapDir = path.join(dir, 'snapshots');
@@ -136,7 +154,11 @@ export async function exportSite(opts: ExportOptions): Promise<ExportResult> {
     worktree: null,
   };
   writeFileSync(path.join(snapDir, 'index.json'), JSON.stringify(index, null, 2) + '\n');
-  for (const { snapshot } of picked) writeFileSync(path.join(snapDir, `${snapshot.sha}.json.gz`), encodeSnapshot(snapshot));
+  // Snapshots cached before origin redaction may still carry credentials in the origin URL.
+  for (const { snapshot } of picked) {
+    const clean = { ...snapshot, origin: redactOrigin(snapshot.origin) };
+    writeFileSync(path.join(snapDir, `${snapshot.sha}.json.gz`), encodeSnapshot(clean));
+  }
 
   let pairs = 0;
   const pairsSkipped = picked.length > MAX_COMPARE_REFS;
