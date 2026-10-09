@@ -13,6 +13,8 @@ Usage:
   ${serveUsage}
   ${exportUsage}
   ${publishUsage}
+  codeviz trace browser <url> | import-cpuprofile <file> | collect   (run "codeviz trace" for options)
+  codeviz overlay lcov <lcov.info>
   codeviz help
   codeviz --version`;
 

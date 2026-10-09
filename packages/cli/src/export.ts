@@ -10,6 +10,8 @@ import { loadOverlays, reportUnmatched, summarize } from './overlay.ts';
 import { resolveRef } from './refs.ts';
 import { redactOrigin, repoId, repoName } from './repo.ts';
 import { findWebDir } from './server.ts';
+import { readTrace } from './trace/format.ts';
+import { TraceStore } from './trace/live.ts';
 import { version } from './version.ts';
 
 /** Above this many refs, pairwise compare files are not precomputed (n*(n-1) diffs). */
@@ -31,6 +33,8 @@ export interface ExportOptions {
   webDir?: string;
   /** Overlay files (JSON or CSV) to ship as extra color modes. */
   overlays?: string[];
+  /** Recorded trace files (`codeviz trace ...` output) to ship for the trace player. */
+  traces?: string[];
   log?: (s: string) => void;
 }
 
@@ -63,7 +67,8 @@ function dirBytes(dir: string): number {
 /**
  * Write a static codeviz site to `opts.dir`: the built web UI, snapshots/index.json,
  * snapshots/<sha>.json.gz per ref, snapshots/compare/<base>-<head>.json.gz per ordered pair, and
- * snapshots/overlays/index.json plus <name>.json.gz per overlay.
+ * snapshots/overlays/index.json plus <name>.json.gz per overlay, and snapshots/traces/index.json plus
+ * <id>.json.gz per trace.
  * Throws (before writing anything) on WORKTREE, unknown refs, a non-empty dir or a missing web build.
  */
 export async function exportSite(opts: ExportOptions): Promise<ExportResult> {
@@ -87,6 +92,14 @@ export async function exportSite(opts: ExportOptions): Promise<ExportResult> {
   }
   if (unknown.length) throw new Error(`unknown git ref${unknown.length > 1 ? 's' : ''}: ${unknown.join(', ')}`);
   const overlays = loadOverlays(opts.overlays ?? [], root);
+  const traces = new TraceStore();
+  for (const f of opts.traces ?? []) {
+    try {
+      traces.add(readTrace(f), f);
+    } catch (err) {
+      throw new Error(`cannot read trace ${f}: ${(err as Error).message}`);
+    }
+  }
 
   const webDirFound = opts.webDir ?? findWebDir();
   if (!webDirFound || !existsSync(path.join(webDirFound, 'index.html'))) {
@@ -171,6 +184,14 @@ export async function exportSite(opts: ExportOptions): Promise<ExportResult> {
     mkdirSync(ovDir, { recursive: true });
     writeFileSync(path.join(ovDir, 'index.json'), JSON.stringify(overlays.map(summarize), null, 2) + '\n');
     for (const o of overlays) writeFileSync(path.join(ovDir, `${o.name}.json.gz`), gzipSync(JSON.stringify(o)));
+  }
+
+  const traceList = traces.list();
+  if (traceList.length) {
+    const trDir = path.join(snapDir, 'traces');
+    mkdirSync(trDir, { recursive: true });
+    writeFileSync(path.join(trDir, 'index.json'), JSON.stringify(traceList, null, 2) + '\n');
+    for (const t of traceList) writeFileSync(path.join(trDir, `${t.id}.json.gz`), traces.gz(t.id)!);
   }
 
   let pairs = 0;

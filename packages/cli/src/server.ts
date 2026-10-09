@@ -9,6 +9,7 @@ import { cacheDir, type SnapshotSummary } from './cache.ts';
 import { compareRefs } from './compare.ts';
 import { summarize, type Overlay } from './overlay.ts';
 import { resolveRef } from './refs.ts';
+import { TraceStore } from './trace/live.ts';
 import { repoId, repoName } from './repo.ts';
 import { analyzeInChild, type ChildAnalysis } from './worker.ts';
 
@@ -20,6 +21,10 @@ export interface ServerOptions {
   worktree?: Snapshot | null;
   /** From `--overlay`: served at /api/overlays, never cached. */
   overlays?: Overlay[];
+  /** From `--trace`: recorded traces served at /api/traces (in memory only). Live ones are added here too. */
+  traces?: TraceStore;
+  /** `--trace-listen`: accept live ticks (POST /trace, the Bun preload's body shape) on this server. */
+  traceListen?: boolean;
 }
 
 const MIME: Record<string, string> = {
@@ -108,6 +113,42 @@ function readBody(req: http.IncomingMessage): Promise<string> {
   });
 }
 
+/** Paths that take live trace ticks on the serve port (`--trace-listen`). */
+export const TRACE_POST_PATHS = new Set(['/trace', '/api/traces']);
+
+/**
+ * POST handler for live ticks (NDJSON: header line + ticks, as harness/bun-trace.ts posts them).
+ * Requests from a web page on another origin are refused, so a page open in the browser cannot
+ * inject ticks; the preload (no Origin header) and same-origin posts are accepted.
+ */
+export async function handleTracePost(store: TraceStore, req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  const origin = req.headers.origin;
+  if (origin && origin !== `http://${req.headers.host}`) return sendJson(res, 403, { error: 'cross-origin trace post' });
+  try {
+    store.accept(await readBody(req));
+    res.writeHead(204).end();
+  } catch (err) {
+    sendJson(res, 400, { error: (err as Error).message });
+  }
+}
+
+/** Server-Sent Events: ticks of live trace `id` from index `from`, then each new one as it arrives. */
+function handleTraceStream(store: TraceStore, req: http.IncomingMessage, res: http.ServerResponse, id: string, from: number): void {
+  const trace = store.get(id);
+  if (!trace) return sendJson(res, 404, { error: 'no such trace' });
+  res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+  res.write(': codeviz trace stream\n\n');
+  const send = (tick: unknown) => res.write(`data: ${JSON.stringify(tick)}\n\n`);
+  for (const tick of trace.ticks.slice(Math.max(0, from))) send(tick);
+  if (!store.isLive(id)) return void res.end();
+  const off = store.subscribe(id, (tick) => send(tick));
+  const ka = setInterval(() => res.write(': ka\n\n'), 15_000);
+  req.on('close', () => {
+    off();
+    clearInterval(ka);
+  });
+}
+
 export type CodevizServer = http.Server & {
   /** Resolves once no analysis is in flight (so temp worktrees have been cleaned up). */
   idle(): Promise<void>;
@@ -124,6 +165,7 @@ export function createServer(opts: ServerOptions): CodevizServer {
   let worktree: Snapshot | null = opts.worktree ?? null;
   const overlays = opts.overlays ?? [];
   const overlayGz = new Map(overlays.map((o) => [o.name, gzipSync(JSON.stringify(o))]));
+  const traces = opts.traces ?? new TraceStore();
   /**
    * Like cache.listSnapshots, but each file is decoded only once per (mtime, size): decoding every
    * cached snapshot on each GET /api/snapshots costs tens of ms with a dozen snapshots cached.
@@ -306,6 +348,15 @@ export function createServer(opts: ServerOptions): CodevizServer {
       const gz = overlayGz.get(decodeURIComponent(o[1]!));
       return gz ? sendGzippedJson(req, res, gz) : sendJson(res, 404, { error: 'no such overlay' });
     }
+    if (opts.traceListen && method === 'POST' && TRACE_POST_PATHS.has(p)) return handleTracePost(traces, req, res);
+    if (p === '/api/traces' && method === 'GET') return sendJson(res, 200, traces.list());
+    const tr = /^\/api\/traces\/([^/]+)(\/stream)?$/.exec(p);
+    if (tr && method === 'GET') {
+      const tid = decodeURIComponent(tr[1]!);
+      if (tr[2]) return handleTraceStream(traces, req, res, tid, Number(url.searchParams.get('from')) || 0);
+      const gz = traces.gz(tid);
+      return gz ? sendGzippedJson(req, res, gz) : sendJson(res, 404, { error: 'no such trace' });
+    }
     if (p === '/api/analyze' && method === 'POST') return handleAnalyze(req, res);
     if (p === '/api/compare' && method === 'GET') return handleCompare(req, res, url);
     if (p.startsWith('/api/')) return sendJson(res, 404, { error: 'not found' });
@@ -315,7 +366,9 @@ export function createServer(opts: ServerOptions): CodevizServer {
 
   const server = http.createServer((req, res) => {
     const t0 = Date.now();
-    res.on('finish', () => log(`${req.method} ${req.url} ${res.statusCode} ${Date.now() - t0}ms`));
+    // Live tick posts arrive every tick; logging each would drown the log.
+    if (!(req.method === 'POST' && TRACE_POST_PATHS.has(req.url ?? '')))
+      res.on('finish', () => log(`${req.method} ${req.url} ${res.statusCode} ${Date.now() - t0}ms`));
     handle(req, res).catch((err) => {
       if (!res.headersSent) sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) });
       else res.end();

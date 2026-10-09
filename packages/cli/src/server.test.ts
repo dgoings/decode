@@ -89,3 +89,35 @@ test('analysis runs off the event loop: reads stay responsive and a duplicate PO
     first: 200,
   });
 }, 30_000);
+
+test('traces: list, fetch, live post and SSE stream', async () => {
+  const { TraceStore } = await import('./trace/live.ts');
+  const store = new TraceStore();
+  const header = { format: 'codeviz-trace' as const, version: 1 as const, sha: 'abc', startedAt: '2026-10-09T16:00:00.000Z', tickMs: 500, source: 'server' as const };
+  store.add({ header, ticks: [{ t: 500, files: [['a.ts', 2]], edges: [] }] }, '/x/rec.jsonl.gz');
+  const srv = createServer({ root: repo, since: '1y', traces: store, traceListen: true });
+  await new Promise<void>((r) => srv.listen(0, '127.0.0.1', r));
+  const b = `http://127.0.0.1:${(srv.address() as { port: number }).port}`;
+  try {
+    expect((await (await fetch(`${b}/api/traces`)).json())).toEqual([
+      { id: 'rec', source: 'server', sha: 'abc', startedAt: header.startedAt, tickMs: 500, ticks: 1, durationMs: 500, live: false },
+    ]);
+    expect((await (await fetch(`${b}/api/traces/rec`)).json()).ticks).toHaveLength(1);
+    const live = { ...header, source: 'browser', startedAt: '2026-10-09T17:00:00.000Z' };
+    const tick = { t: 1000, files: [['a.ts', 3]], edges: [] };
+    const posted = await fetch(`${b}/trace`, { method: 'POST', body: `${JSON.stringify(live)}\n${JSON.stringify(tick)}\n` });
+    expect(posted.status).toBe(204);
+    const id = ((await (await fetch(`${b}/api/traces`)).json()) as { id: string; live: boolean }[]).find((t) => t.live)!.id;
+    const ctl = new AbortController();
+    const stream = await fetch(`${b}/api/traces/${id}/stream?from=0`, { signal: ctl.signal });
+    expect(stream.headers.get('content-type')).toContain('text/event-stream');
+    const reader = stream.body!.getReader();
+    let text = '';
+    while (!text.includes('data: ')) text += new TextDecoder().decode((await reader.read()).value);
+    expect(JSON.parse(text.slice(text.indexOf('data: ') + 6).split('\n')[0]!)).toEqual(tick);
+    ctl.abort();
+  } finally {
+    srv.closeAllConnections();
+    srv.close();
+  }
+});
