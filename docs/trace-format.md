@@ -39,5 +39,7 @@ What `n` means for each source:
 - **Server preload.** It runs `Bun.Transpiler`, then parses the result with acorn and adds one counter call as the first statement of each function body. It does not rename or wrap any binding.
   - Function identity, `const` and properties stored on functions are unchanged. `fn.toString()` does show the added call.
   - If Bun cannot transpile a file or acorn cannot parse it, that file loads without instrumentation and one line goes to stderr. Calls in that file are not counted.
+  - In TSX files, `Bun.Transpiler` emits the automatic-runtime JSX helper calls but not their imports, so the preload adds the imports itself from `compilerOptions.jsxImportSource` (default `react`). If those helpers would need both the dev and the prod runtime, the file is left untouched.
+  - Stack line numbers inside instrumented files refer to the transpiled code, not the original TS.
   - JavaScriptCore drops the caller frame of tail calls (`return f(x)`), so those edges are missed.
 - **Network requests.** `trace browser` only fetches scripts, `SourceMap` headers and `.map` files from the traced page's origin and from `--allow-origin <origin>` (repeatable). When the page origin is unknown (attached to `about:blank` with no `<url>`), it uses loopback hosts instead. `import-cpuprofile` only fetches from loopback hosts. Code from any other origin is counted under `dropped` and never requested.

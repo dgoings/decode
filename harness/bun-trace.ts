@@ -19,6 +19,8 @@
 // module-load hit. `__cv_h` counts calls per function and, on a random 1-in-N call, records
 // caller-file -> this-file from new Error().stack (weighted ×N in the trace).
 // If transpiling or parsing fails, the module is loaded untouched (one stderr line) and not counted.
+// The counter helper is a hoisted `function __cv_h` appended at the end (works inside import cycles), and
+// for TSX the automatic-runtime helper imports Bun.Transpiler leaves out are appended from <jsxImportSource>.
 // JavaScriptCore drops the caller frame of strict-mode tail calls (`return f(x)`), so those edges are missed.
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -108,7 +110,7 @@ function setup(): void {
       const m = /\(?((?:file:\/\/)?\/[^()]+?):\d+:\d+\)?\s*$/.exec(line);
       if (!m) continue;
       const path = m[1]!.replace(/^file:\/\//, '');
-      if (path === harnessFile) continue;
+      if (path === harnessFile || /\bat __cv_h\b/.test(line)) continue; // harness + per-module counter helper
       // First non-harness frame is the instrumented function itself; the next one is its caller.
       if (!sawCallee) {
         sawCallee = true;
@@ -162,6 +164,34 @@ function setup(): void {
     return '<anonymous>';
   };
 
+  // Bun.Transpiler emits automatic-runtime JSX helpers (jsxDEV_xxx, jsx_xxx, jsxs_xxx, Fragment_xxx)
+  // without importing them (it ignores jsx: preserve), so add the imports Bun's own loader would.
+  let importSource: string | undefined;
+  const jsxImportSource = (): string => {
+    if (importSource === undefined) {
+      importSource = 'react';
+      try {
+        const raw = readFileSync(`${ROOT}/tsconfig.json`, 'utf8').replace(/^\s*\/\/.*$/gm, '');
+        const v = JSON.parse(raw)?.compilerOptions?.jsxImportSource;
+        if (typeof v === 'string' && v) importSource = v;
+      } catch {
+        // tsconfig with comments/trailing commas or none: default react
+      }
+    }
+    return importSource;
+  };
+  const jsxImports = (js: string): string => {
+    const helpers = new Map<string, string>(); // local name -> exported name
+    for (const m of js.matchAll(/\b(jsxDEV|jsxs|jsx|Fragment)_[A-Za-z0-9]+\b/g)) helpers.set(m[0], m[1]!);
+    if (!helpers.size) return '';
+    const dev = [...helpers.values()].includes('jsxDEV');
+    const prod = [...helpers.values()].some((n) => n === 'jsx' || n === 'jsxs');
+    if (dev && prod) throw new Error('mixed dev/prod JSX helpers');
+    const spec = `${jsxImportSource()}/${dev ? 'jsx-dev-runtime' : 'jsx-runtime'}`;
+    const names = [...helpers].map(([local, name]) => `${name} as ${local}`).join(', ');
+    return `import { ${names} } from ${JSON.stringify(spec)};\n`;
+  };
+
   /** Transpile to JS, then splice a counter call into every function body (offsets spliced back to front). */
   const instrument = (src: string, rel: string, loader: string): string => {
     const js: string = loader === 'js' ? src : transpiler(loader).transformSync(src);
@@ -196,8 +226,12 @@ function setup(): void {
     edits.sort((a, b) => b[0] - a[0]);
     let out = js;
     for (const [at, text] of edits) out = out.slice(0, at) + text + out.slice(at);
-    // Same line as the first statement: no line shift for stack traces.
-    return `var __cv_h=globalThis.__codevizTrace.hit;${out}\n;globalThis.__codevizTrace.load(${JSON.stringify(rel)});\n`;
+    // Everything extra goes after the code (imports and function declarations hoist), so no line shifts.
+    // A hoisted declaration (not `var`) so functions called during an import cycle, before this
+    // module's body runs, can already count; a missing global is a no-op.
+    let tail = `\n;globalThis.__codevizTrace?.load(${JSON.stringify(rel)});\nfunction __cv_h(i) { var t = globalThis.__codevizTrace; if (t) t.hit(i); }\n`;
+    if (loader === 'tsx' || loader === 'jsx') tail += jsxImports(js);
+    return out + tail;
   };
 
   const flush = async (final = false): Promise<void> => {
