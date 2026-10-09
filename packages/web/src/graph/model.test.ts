@@ -83,7 +83,7 @@ test('allFiles with Go package modules: file boxes under dir groups, module edge
       mod(`${P}/cmd/app`, `${P}/internal/a`),
       mod(`${P}/internal/a`, `${P}/internal/b`),
       mod(`${P}/internal/a_test`, `${P}/internal/a`), // same directory: dropped
-      mod(`${P}/internal/a_test`, `${P}/cmd/app`),
+      mod(`${P}/internal/a_test`, `${P}/cmd/app`), // test-only: dropped in allFiles mode
     ],
   } as unknown as Snapshot;
 
@@ -100,14 +100,11 @@ test('allFiles with Go package modules: file boxes under dir groups, module edge
   expect(m.edges.map((e) => [e.from, e.to, e.level])).toEqual([
     ['cmd/app', 'internal/a', 'module'],
     ['internal/a', 'internal/b', 'module'],
-    ['internal/a', 'cmd/app', 'module'],
-  ]);
-  // Collapsing `internal` aggregates both internal/* edges onto it.
+  ]); // a_test edges are dropped in allFiles mode (no test-only folder cycles)
+  expect(findCycles(m).components).toEqual([]);
+  // Collapsing `internal` aggregates its edges onto it.
   const v = aggregateEdges(m, new Set(['internal']));
-  expect(v.edges.map((e) => [e.from, e.to, e.count]).sort()).toEqual([
-    ['cmd/app', 'internal', 1],
-    ['internal', 'cmd/app', 1],
-  ]);
+  expect(v.edges.map((e) => [e.from, e.to, e.count]).sort()).toEqual([['cmd/app', 'internal', 1]]);
 });
 
 test('aggregateEdges re-targets edges to the collapsed group, merges counts, drops self-loops', () => {

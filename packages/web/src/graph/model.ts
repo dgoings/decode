@@ -225,6 +225,8 @@ export function buildGraphModel(snap: Snapshot, opts: GraphModelOptions = {}): G
   for (const raw of edges) {
     let e = raw;
     if (e.level === 'module' && (dirOfModule.has(e.from) || dirOfModule.has(e.to))) {
+      // Test packages (Go `x_test`) share their package's folder; their edges would only add test-only cycles.
+      if (e.from.endsWith('_test')) continue;
       const from = dirOfModule.get(e.from) ?? e.from;
       const to = dirOfModule.get(e.to) ?? e.to;
       // A repo-root package has no directory group to attach to; its edges are not drawn here.
