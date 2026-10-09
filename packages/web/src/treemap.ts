@@ -3,6 +3,7 @@ import { hierarchy, treemap, type HierarchyRectangularNode } from 'd3-hierarchy'
 import { scaleLinear, scaleSequential } from 'd3-scale';
 import { interpolateBlues, interpolateOranges } from 'd3-scale-chromatic';
 import type { Snapshot } from './data.ts';
+import type { HideTarget } from './hidden.ts';
 
 export type ColorMode = 'complexity' | 'churn';
 
@@ -163,8 +164,8 @@ export function createTreemap(
   container: HTMLElement,
   opts: {
     onFileClick?(path: string): void;
-    /** Right-click on a file block (the browser menu is suppressed when this is set). */
-    onFileContextMenu?(path: string, ev: MouseEvent): void;
+    /** Right-click on a file block or directory group (the browser menu is suppressed when this is set). */
+    onContextMenu?(target: HideTarget, ev: MouseEvent): void;
     style?: TreemapStyle;
   } = {},
 ): Treemap {
@@ -276,7 +277,7 @@ export function createTreemap(
       const ht = n.y1 - n.y0;
       if (w < 1 || ht < 1) return;
       if (n.data.children) {
-        const g = svg('g', { class: 'tm-dir', 'data-i': i });
+        const g = svg('g', { class: 'tm-dir', 'data-i': i, 'data-dir': n.data.path });
         g.append(svg('rect', { x: n.x0, y: n.y0, width: w, height: ht }));
         const label = fit(n.data.name, w);
         if (label && ht > DIR_HEADER) {
@@ -363,10 +364,10 @@ export function createTreemap(
   };
   const onContext = (e: MouseEvent) => {
     const n = nodeAt(e);
-    if (!n?.data.file || !opts.onFileContextMenu) return;
+    if (!n || n.depth === 0 || !opts.onContextMenu) return;
     e.preventDefault();
     tip.hidden = true;
-    opts.onFileContextMenu(n.data.path, e);
+    opts.onContextMenu({ kind: n.data.file ? 'file' : 'dir', path: n.data.path }, e);
   };
   const onKey = (e: KeyboardEvent) => {
     if (e.key !== 'Escape' || !tree || !focus) return;

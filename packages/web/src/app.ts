@@ -1,6 +1,6 @@
 import type { CompareView } from './compare/view.ts';
 import { isAnalyzed, WORKTREE, type DataSource, type Snapshot, type SnapshotIndex } from './data.ts';
-import { createHiddenStore, filterDiff, filterSnapshot, type HiddenStore } from './hidden.ts';
+import { createHiddenStore, filterDiff, filterSnapshot, type HiddenStore, type HideTarget } from './hidden.ts';
 import { createHiddenUI, type HiddenUI } from './hiddenui.ts';
 import { createRefPicker, tierBadges, type RefPicker } from './refpicker.ts';
 import { colorScale, createLegend, createTreemap, legendLabel, type ColorMode, type Treemap } from './treemap.ts';
@@ -73,7 +73,7 @@ interface TreemapView extends View {
 }
 
 interface ViewHooks {
-  onFileContextMenu(path: string, ev: MouseEvent): void;
+  onContextMenu(target: HideTarget, ev: MouseEvent): void;
   barExtra(): Node;
 }
 
@@ -86,7 +86,7 @@ function createTreemapView(el: HTMLElement, hooks: ViewHooks): TreemapView {
   const view: TreemapView = {
     el,
     bar,
-    treemap: createTreemap(box, { onFileContextMenu: hooks.onFileContextMenu }),
+    treemap: createTreemap(box, { onContextMenu: hooks.onContextMenu }),
     mode: readHashMode(),
     snap: null,
     setMode(mode) {
@@ -107,7 +107,7 @@ function createTreemapView(el: HTMLElement, hooks: ViewHooks): TreemapView {
 /** The graph view pulls in Cytoscape, so it is loaded on first use. */
 async function createGraphPane(el: HTMLElement, hooks: ViewHooks): Promise<View> {
   const { createGraphView } = await import('./graph/view.ts');
-  const graph = createGraphView(el, { onNodeContextMenu: hooks.onFileContextMenu, barExtra: hooks.barExtra });
+  const graph = createGraphView(el, { onContextMenu: hooks.onContextMenu, barExtra: hooks.barExtra });
   const view: View = {
     el,
     snap: null,
@@ -170,7 +170,7 @@ async function createMapPane(el: HTMLElement, hooks: ViewHooks): Promise<MapView
     mode: 'boxes',
     colorMode: readHashMode(),
     showEdges,
-    onNodeContextMenu: hooks.onFileContextMenu,
+    onContextMenu: hooks.onContextMenu,
     barExtra: () => {
       const tools = document.createElement('span');
       tools.className = 'map-tools';
@@ -285,13 +285,13 @@ export async function startApp(root: HTMLElement, source: DataSource): Promise<A
   const views = new Map<ViewName, Promise<View>>();
   let compare: Promise<CompareView> | null = null;
 
-  // Hidden files, per repo (set up once the index names the repo, before any view is created).
+  // Hidden files and folders, per repo (set up once the index names the repo, before any view is created).
   let store!: HiddenStore;
   let ui!: HiddenUI;
   let hiddenSet = new Set<string>();
   let hiddenVersion = 0;
   const hooks: ViewHooks = {
-    onFileContextMenu: (path, ev) => ui.openMenu(path, ev.clientX, ev.clientY),
+    onContextMenu: (target, ev) => ui.openMenu(target, ev.clientX, ev.clientY),
     barExtra: () => ui.chip(),
   };
   /** Filtered copy of a snapshot, cached so an unchanged hidden set keeps the same object (no re-render). */
@@ -341,7 +341,7 @@ export async function startApp(root: HTMLElement, source: DataSource): Promise<A
         readParam: readHashParam,
         writeParam: writeHashParam,
         filter: (diff, head) => ({ diff: filterDiff(diff, hiddenSet), head: filtered(head) }),
-        onFileContextMenu: hooks.onFileContextMenu,
+        onContextMenu: hooks.onContextMenu,
         barExtra: hooks.barExtra,
       });
       if (app.index) view.setIndex(app.index);
