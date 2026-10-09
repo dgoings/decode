@@ -8,6 +8,7 @@ import { decodeSnapshot, encodeSnapshot, type Snapshot } from '@codeviz/core';
 import { cacheDir, type SnapshotSummary } from './cache.ts';
 import { compareRefs } from './compare.ts';
 import { summarize, type Overlay } from './overlay.ts';
+import { defaultBranch, prRange, recentMerges, type PrRange } from './pr.ts';
 import { resolveRef } from './refs.ts';
 import { TraceStore } from './trace/live.ts';
 import { repoId, repoName } from './repo.ts';
@@ -285,6 +286,35 @@ export function createServer(opts: ServerOptions): CodevizServer {
     }
   }
 
+  /** What a PR from `head` would show: the same range `codeviz pr` reviews (merged branches included). */
+  function handlePr(res: http.ServerResponse, url: URL): void {
+    const head = url.searchParams.get('head')?.trim();
+    const base = url.searchParams.get('base')?.trim() || undefined;
+    if (!head) return sendJson(res, 400, { error: 'head is required' });
+    let range: PrRange;
+    try {
+      range = prRange(root, head, base);
+    } catch (err) {
+      return sendJson(res, 400, { error: err instanceof Error ? err.message : String(err) });
+    }
+    if (range.commits === 0) {
+      return sendJson(res, 400, { error: `${head} has no commits that ${range.baseRef} does not already have` });
+    }
+    sendJson(res, 200, range);
+  }
+
+  /** Branches merged into the default branch, newest first (deleted ones included). */
+  function handleMerges(res: http.ServerResponse, url: URL): void {
+    const limit = Math.min(100, Math.max(1, Number(url.searchParams.get('limit')) || 30));
+    const baseRef = defaultBranch(root);
+    if (!baseRef) return sendJson(res, 200, { baseRef: null, merges: [] });
+    try {
+      sendJson(res, 200, { baseRef, merges: recentMerges(root, baseRef, limit) });
+    } catch (err) {
+      sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
   function handleSnapshot(req: http.IncomingMessage, res: http.ServerResponse, sha: string): void {
     if (sha === 'WORKTREE') {
       if (!worktree) return sendJson(res, 404, { error: 'not analyzed' });
@@ -360,6 +390,8 @@ export function createServer(opts: ServerOptions): CodevizServer {
     }
     if (p === '/api/analyze' && method === 'POST') return handleAnalyze(req, res);
     if (p === '/api/compare' && method === 'GET') return handleCompare(req, res, url);
+    if (p === '/api/pr' && method === 'GET') return handlePr(res, url);
+    if (p === '/api/merges' && method === 'GET') return handleMerges(res, url);
     if (p.startsWith('/api/')) return sendJson(res, 404, { error: 'not found' });
     if (method !== 'GET' && method !== 'HEAD') return sendJson(res, 405, { error: 'method not allowed' });
     handleStatic(res, p);

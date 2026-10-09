@@ -72,6 +72,30 @@ export interface Trace {
   ticks: TraceTick[];
 }
 
+/** What a PR from a branch or commit shows (GET /api/pr); mirrors the CLI's PrRange. */
+export interface PrRange {
+  base: string;
+  baseRef: string;
+  head: string;
+  commits: number;
+  mergedIn?: string;
+  /** Head is a commit on main (a squash merge): the range is that one commit. */
+  single?: boolean;
+}
+
+/** A branch merged into the default branch (GET /api/merges); deleted branches included. */
+export interface MergedBranch {
+  /** `squash`: a GitHub squash merge, i.e. one commit holding the whole PR. */
+  kind: 'merge' | 'squash';
+  merge: string;
+  head: string;
+  base: string;
+  name: string;
+  pr?: number;
+  date: number;
+  commits: number;
+}
+
 export interface DataSource {
   readonly kind: 'api' | 'static';
   index(): Promise<SnapshotIndex>;
@@ -79,6 +103,10 @@ export interface DataSource {
   analyze?(ref: string): Promise<{ sha: string }>;
   /** Diff two refs; blocks until both are analyzed. `head` may be WORKTREE. */
   compare?(base: string, head: string): Promise<SnapshotDiff>;
+  /** The PR range for a branch or commit (live server only). */
+  pr?(head: string): Promise<PrRange>;
+  /** Recently merged branches, newest first (live server only). */
+  merges?(): Promise<{ baseRef: string | null; merges: MergedBranch[] }>;
   /** Overlays available as extra color modes; [] when there are none. */
   overlays(): Promise<OverlaySummary[]>;
   overlay(name: string): Promise<Overlay>;
@@ -136,6 +164,14 @@ export class ApiDataSource implements DataSource {
   compare(base: string, head: string): Promise<SnapshotDiff> {
     const q = new URLSearchParams({ base, head });
     return getJson(`${this.base}/compare?${q}`);
+  }
+
+  pr(head: string): Promise<PrRange> {
+    return getJson(`${this.base}/pr?${new URLSearchParams({ head })}`);
+  }
+
+  merges(): Promise<{ baseRef: string | null; merges: MergedBranch[] }> {
+    return getJson(`${this.base}/merges`);
   }
 
   overlays(): Promise<OverlaySummary[]> {
