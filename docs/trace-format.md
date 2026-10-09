@@ -31,5 +31,13 @@ What `n` means for each source:
 | source | `files` | `edges` |
 |---|---|---|
 | browser | function invocations (precise coverage call counts) | profiler samples where the two frames are adjacent on the stack |
-| server | wrapped-function calls + 1 per module load | sampled caller→callee calls (1 in N, multiplied by N) |
+| server | instrumented-function calls + 1 per module load | sampled caller→callee calls (1 in N, multiplied by N) |
 | cpuprofile | samples with the file anywhere on the stack | samples where the two frames are adjacent on the stack |
+
+## Capture limits
+
+- **Server preload.** It runs `Bun.Transpiler`, then parses the result with acorn and adds one counter call as the first statement of each function body. It does not rename or wrap any binding.
+  - Function identity, `const` and properties stored on functions are unchanged. `fn.toString()` does show the added call.
+  - If Bun cannot transpile a file or acorn cannot parse it, that file loads without instrumentation and one line goes to stderr. Calls in that file are not counted.
+  - JavaScriptCore drops the caller frame of tail calls (`return f(x)`), so those edges are missed.
+- **Network requests.** `trace browser` only fetches scripts, `SourceMap` headers and `.map` files from the traced page's origin and from `--allow-origin <origin>` (repeatable). When the page origin is unknown (attached to `about:blank` with no `<url>`), it uses loopback hosts instead. `import-cpuprofile` only fetches from loopback hosts. Code from any other origin is counted under `dropped` and never requested.

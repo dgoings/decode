@@ -7,7 +7,7 @@ import { DEFAULT_COLLECTOR_PORT, runCollector } from '../trace/collect.ts';
 import { importCpuProfileFile } from '../trace/cpuprofile.ts';
 import { RepoPaths } from '../trace/sourcemap.ts';
 
-export const traceUsage = `codeviz trace browser [<url>] [--attach <port>] [--out <file>] [--root <repo>] [--sha <sha>] [--tick <ms>] [--duration <s>] [--headless]
+export const traceUsage = `codeviz trace browser [<url>] [--attach <port>] [--allow-origin <origin>]... [--out <file>] [--root <repo>] [--sha <sha>] [--tick <ms>] [--duration <s>] [--headless]
   codeviz trace import-cpuprofile <file> [--out <file>] [--root <repo>] [--sha <sha>] [--tick <ms>]
   codeviz trace collect [--port <n>] [--out <file>] [--duration <s>]   (receives posts from harness/bun-trace.ts)`;
 
@@ -21,10 +21,11 @@ interface Opts {
   attach?: number;
   port?: number;
   headless: boolean;
+  allowOrigins: string[];
 }
 
 function parse(args: string[]): Opts | string {
-  const o: Opts = { positional: [], root: process.cwd(), headless: false };
+  const o: Opts = { positional: [], root: process.cwd(), headless: false, allowOrigins: [] };
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
     const eq = a.indexOf('=');
@@ -35,6 +36,14 @@ function parse(args: string[]): Opts | string {
       return Number.isFinite(v) && v > 0 ? v : undefined;
     };
     if (name === '--headless') o.headless = true;
+    else if (name === '--allow-origin') {
+      const v = value();
+      try {
+        o.allowOrigins.push(new URL(v ?? '').origin);
+      } catch {
+        return '--allow-origin needs an origin like https://cdn.example.com';
+      }
+    }
     else if (name === '--out') o.out = value();
     else if (name === '--root') o.root = resolve(value() ?? '');
     else if (name === '--sha') o.sha = value();
@@ -140,6 +149,7 @@ export async function traceCommand(args: string[]): Promise<number> {
         tickMs: o.tickMs ?? 500,
         durationS: o.durationS,
         headless: o.headless,
+        allowOrigins: o.allowOrigins,
         log,
       });
       for (const w of new Set(r.warnings)) log(`warning: ${w}`);

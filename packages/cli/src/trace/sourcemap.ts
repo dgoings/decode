@@ -128,6 +128,28 @@ export async function fetchText(url: string): Promise<string> {
   return res.text();
 }
 
+const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]']);
+
+/**
+ * Which URLs the CLI may request itself (scripts, SourceMap headers, .map files): the given origins,
+ * plus any loopback host when `loopback` is set. Non-http(s) locations (data:, file:, plain paths)
+ * need no network and pass; anything else (other hosts, ws:, chrome-extension:) is refused.
+ */
+export function fetchPolicy(origins: string[] = [], loopback = true): (url: string) => boolean {
+  const allowed = new Set(origins.map((o) => new URL(o).origin));
+  return (url) => {
+    let u: URL;
+    try {
+      u = new URL(url);
+    } catch {
+      return isAbsolute(url); // plain local path
+    }
+    if (u.protocol === 'data:' || u.protocol === 'file:') return true;
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+    return allowed.has(u.origin) || (loopback && LOOPBACK.has(u.hostname));
+  };
+}
+
 /** Load the source map for a script. `mapRef` comes from the script comment, CDP, or a SourceMap header. */
 export async function loadSourceMap(scriptUrl: string, mapRef: string): Promise<SourceMapIndex> {
   const mapUrl = mapRef.startsWith('data:') ? mapRef : new URL(mapRef, scriptUrl).href;

@@ -7,15 +7,17 @@ import { join } from 'node:path';
 import { convertCpuProfile } from './cpuprofile.ts';
 import { createTraceWriter, readTrace } from './format.ts';
 import { ScriptMapper, type CpuProfile } from './profile.ts';
-import { fetchText, RepoPaths } from './sourcemap.ts';
+import { fetchPolicy, fetchText, RepoPaths } from './sourcemap.ts';
 
 const root = join(import.meta.dir, 'fixtures');
 const paths = new RepoPaths(root, (rel) => existsSync(join(root, rel)));
 let server: Server;
 let base = '';
+let requests = 0;
 
 beforeAll(async () => {
   server = createServer((req, res) => {
+    requests++;
     const file = join(root, decodeURIComponent(new URL(req.url!, 'http://x').pathname));
     if (!file.startsWith(root) || !existsSync(file)) return void res.writeHead(404).end();
     res.writeHead(200, { 'content-type': file.endsWith('.js') ? 'text/javascript' : 'application/json' }).end(readFileSync(file));
@@ -42,6 +44,17 @@ test('source-map path mapping and cpuprofile conversion', async () => {
   expect(mapper.locateOffset('s1', bundleUrl, at('var ticks').off)).toBe('src/main.ts');
   expect(paths.resolve(join(root, 'node_modules/lib/index.js'))).toBeUndefined();
   expect(paths.resolve('data:text/javascript,1')).toBeUndefined();
+
+  // Fetch policy: loopback + allowed origins only; a refused origin is dropped without any request.
+  const policy = fetchPolicy(['https://app.example.com']);
+  expect(fetchPolicy(['http://127.0.0.1:4191'], false)('http://127.0.0.1:4192/lib.js.map')).toBe(false);
+  expect([policy('http://localhost:3000/a.js'), policy('http://[::1]:1/a'), policy('https://app.example.com/x.js.map')]).toEqual([true, true, true]);
+  expect([policy('https://clerk.example.dev/npm/clerk.js'), policy('ws://127.0.0.1/x'), policy('/abs/file.ts')]).toEqual([false, false, true]);
+  const before = requests;
+  const strict = new ScriptMapper(paths, () => false);
+  await strict.prepare('s2', bundleUrl, () => fetchText(bundleUrl));
+  expect(strict.locateOffset('s2', bundleUrl, at('function heavy').off)).toBeUndefined();
+  expect(requests).toBe(before);
 
   // Synthetic profile: http bundle frames (mapped) + an absolute-path frame (Bun style) + a node_modules leaf.
   const frame = (functionName: string, url: string, p: { line: number; col: number }, scriptId = '7') => ({

@@ -3,7 +3,7 @@ import type { Browser, CDPSession, Page } from 'playwright';
 import { attachToPage, type CdpSession } from './cdp.ts';
 import { createTraceWriter, countsToTuples, edgesToTuples, type TraceHeader, type TraceTick } from './format.ts';
 import { bucketProfile, resolveProfileFrames, ScriptMapper, type CpuProfile } from './profile.ts';
-import type { RepoPaths } from './sourcemap.ts';
+import { fetchPolicy, type RepoPaths } from './sourcemap.ts';
 
 export class PlaywrightMissing extends Error {}
 
@@ -17,6 +17,8 @@ export interface BrowserTraceOptions {
   tickMs: number;
   durationS?: number;
   headless: boolean;
+  /** Extra origins (besides the traced page's and loopback) the CLI may fetch scripts/source maps from. */
+  allowOrigins?: string[];
   log: (s: string) => void;
 }
 
@@ -54,12 +56,22 @@ export async function traceBrowser(o: BrowserTraceOptions): Promise<BrowserTrace
   let cleanup: () => Promise<void>;
   let closed: Promise<void>;
   let navigate: (() => Promise<unknown>) | undefined;
+  const pageOrigins: string[] = [];
+  const addOrigin = (u: string | undefined) => {
+    try {
+      if (u && /^https?:/i.test(u)) pageOrigins.push(new URL(u).origin);
+    } catch {
+      // not a URL (e.g. a prefix); ignore
+    }
+  };
+  addOrigin(o.url);
   if (o.attach !== undefined) {
     // Raw CDP: Playwright's connectOverCDP was observed to hang against Chrome for Testing 153.
     const a = await attachToPage(o.attach, o.url);
     session = a.session;
     closed = a.session.closed;
     cleanup = () => a.session.close();
+    addOrigin(a.url);
     o.log(`attached to ${a.url} on port ${o.attach}`);
   } else {
     const pw = await loadPlaywright();
@@ -94,7 +106,9 @@ export async function traceBrowser(o: BrowserTraceOptions): Promise<BrowserTrace
   await session.send('Profiler.startPreciseCoverage', { callCount: true, detailed: true });
   await session.send('Profiler.start');
 
-  const mapper = new ScriptMapper(o.paths);
+  // Only the traced page's origin and --allow-origin are ever fetched (any loopback host when the page
+  // origin is unknown, e.g. attached to about:blank); scripts from other origins are dropped unfetched.
+  const mapper = new ScriptMapper(o.paths, fetchPolicy([...pageOrigins, ...(o.allowOrigins ?? [])], pageOrigins.length === 0));
   const getSource = async (scriptId: string) =>
     ((await session.send('Debugger.getScriptSource', { scriptId })) as { scriptSource: string }).scriptSource;
 

@@ -1,7 +1,7 @@
 // Script-to-source mapping and CPU profile (.cpuprofile / CDP Profiler.stop) bucketing.
 import { isAbsolute } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { fetchText, LineIndex, loadSourceMap, RepoPaths, sourceMappingUrl, type SourceMapIndex } from './sourcemap.ts';
+import { fetchPolicy, fetchText, LineIndex, loadSourceMap, RepoPaths, sourceMappingUrl, type SourceMapIndex } from './sourcemap.ts';
 
 export interface CallFrame {
   functionName: string;
@@ -29,6 +29,8 @@ export interface CpuProfile {
 interface ScriptInfo {
   map?: SourceMapIndex;
   lines?: LineIndex;
+  /** http(s) script on an origin the fetch policy does not allow: never fetched, always dropped. */
+  blocked?: boolean;
 }
 
 /** Maps (script, line, column) locations to repo paths, through source maps when the script has one. */
@@ -37,7 +39,11 @@ export class ScriptMapper {
   private ready = new Map<string, ScriptInfo>();
   readonly warnings: string[] = [];
 
-  constructor(readonly paths: RepoPaths) {}
+  /** `canFetch` gates every network request (scripts, SourceMap headers, maps); default loopback only. */
+  constructor(
+    readonly paths: RepoPaths,
+    readonly canFetch: (url: string) => boolean = fetchPolicy(),
+  ) {}
 
   /**
    * Load a script's source map once. `key` is a CDP scriptId or the URL. `getSource` supplies the
@@ -59,6 +65,7 @@ export class ScriptMapper {
     // Scripts without a sourceMappingURL (Bun cpuprofile .ts paths, unbundled dev servers) map to their own URL.
     // node_modules scripts are dropped anyway; don't fetch their maps.
     if (!url || url.startsWith('data:') || /[\\/]node_modules[\\/]/.test(url)) return {};
+    if (/^https?:/i.test(url) && !this.canFetch(url)) return { blocked: true };
     let source: string | undefined;
     try {
       source = await getSource();
@@ -69,8 +76,10 @@ export class ScriptMapper {
     let ref = mapRef || (source !== undefined ? sourceMappingUrl(source) : undefined);
     if (!ref && /^https?:/.test(url)) ref = await headerSourceMap(url);
     if (!ref) return info;
+    const base = isAbsolute(url) ? pathToFileURL(url).href : url;
     try {
-      info.map = await loadSourceMap(isAbsolute(url) ? pathToFileURL(url).href : url, ref);
+      if (!ref.startsWith('data:') && !this.canFetch(new URL(ref, base).href)) return info;
+      info.map = await loadSourceMap(base, ref);
     } catch (err) {
       this.warnings.push(`source map for ${url}: ${(err as Error).message}`);
     }
@@ -80,6 +89,7 @@ export class ScriptMapper {
   /** Repo path for a 0-based line/column in a prepared script (falls back to the URL itself). */
   locate(key: string, url: string, line: number, col: number): string | undefined {
     const info = this.ready.get(key);
+    if (info?.blocked) return undefined;
     if (info?.map) {
       const src = info.map.sourceAt(line, col);
       return src === undefined ? undefined : this.paths.resolve(src);
@@ -89,6 +99,7 @@ export class ScriptMapper {
 
   locateOffset(key: string, url: string, offset: number): string | undefined {
     const info = this.ready.get(key);
+    if (info?.blocked) return undefined;
     if (info?.map && info.lines) {
       const { line, col } = info.lines.position(offset);
       return this.locate(key, url, line, col);
