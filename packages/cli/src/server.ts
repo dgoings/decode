@@ -366,8 +366,8 @@ export function createServer(opts: ServerOptions): CodevizServer {
 
   const server = http.createServer((req, res) => {
     const t0 = Date.now();
-    // Live tick posts arrive every tick; logging each would drown the log.
-    if (!(req.method === 'POST' && TRACE_POST_PATHS.has(req.url ?? '')))
+    // Live tick posts arrive every tick and the UI polls the trace list; logging those would drown the log.
+    if (!(TRACE_POST_PATHS.has(req.url ?? '') && (req.method === 'POST' || req.method === 'GET')))
       res.on('finish', () => log(`${req.method} ${req.url} ${res.statusCode} ${Date.now() - t0}ms`));
     handle(req, res).catch((err) => {
       if (!res.headersSent) sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) });
