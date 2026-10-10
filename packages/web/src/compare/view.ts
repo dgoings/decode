@@ -1,18 +1,20 @@
 import type { FileDelta, FileEntry } from '@codeviz/core';
-import { WORKTREE, type DataSource, type Snapshot, type SnapshotDiff, type SnapshotIndex } from '../data.ts';
+import { WORKTREE, type DataSource, type PrRange, type Snapshot, type SnapshotDiff, type SnapshotIndex } from '../data.ts';
 import { buildCompareGraphModel } from '../graph/model.ts';
 import type { HideTarget } from '../hidden.ts';
 import { createGraphView, type GraphView } from '../graph/view.ts';
 import { createTreemap, type Treemap } from '../treemap.ts';
 import { deltaFiles, sliceFor } from './model.ts';
-import { createCompareToolbar } from './toolbar.ts';
+import { reviewItems, type ReviewItem } from './review.ts';
+import { createCompareToolbar, type PrPick } from './toolbar.ts';
 
 export interface CompareDeps {
   source: DataSource;
   /** Snapshot by sha (the app reuses the one it already holds). */
   snapshot(sha: string): Promise<Snapshot>;
   readParam(key: string): string | null;
-  writeParam(key: string, value: string): void;
+  /** Set a hash param; null removes it. */
+  writeParam(key: string, value: string | null): void;
   /** View-level filter (hidden files) applied to the fetched diff and head before rendering. */
   filter(diff: SnapshotDiff, head: Snapshot): { diff: SnapshotDiff; head: Snapshot };
   /** Right-click on a file or directory (treemap block/header, graph node/compound). */
@@ -30,13 +32,14 @@ export interface CompareView {
   refresh(): void;
 }
 
-type Panel = 'treemap' | 'edges';
+type Panel = 'review' | 'treemap' | 'edges';
 const PANELS: Array<[Panel, string]> = [
+  ['review', 'Look here first'],
   ['treemap', 'Treemap'],
   ['edges', 'Edges'],
 ];
-/** Anything else (including the retired `changes`) falls back to the treemap. */
-const readPanel = (v: string | null): Panel => (v === 'edges' ? v : 'treemap');
+/** Anything else (including the retired `changes`) falls back to the review list. */
+const readPanel = (v: string | null): Panel => (v === 'edges' || v === 'treemap' ? v : 'review');
 const NEUTRAL_FILL = '#e1e4e8';
 /** GitHub's diff addition / deletion colors. */
 const GROW = '#1f883d';
@@ -44,6 +47,7 @@ const SHRINK = '#cf222e';
 
 const fmt = (n: number) => n.toLocaleString();
 const signed = (n: number) => (n > 0 ? `+${fmt(n)}` : n < 0 ? `−${fmt(-n)}` : '0');
+const plural = (n: number, one: string, many = `${one}s`) => `${fmt(n)} ${n === 1 ? one : many}`;
 const short = (sha: string) => (sha === WORKTREE ? sha : sha.slice(0, 7));
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string): HTMLElementTagNameMap[K] {
@@ -109,17 +113,82 @@ function sliceLegend(): HTMLElement {
   return wrap;
 }
 
+/** Jump from a review row to a panel; `hasEdges` says whether the file is in the changed-edge graph. */
+interface ShowIn {
+  (path: string, panel: 'treemap' | 'edges'): void;
+  hasEdges(path: string): boolean;
+}
+
+/** Text with `backticked` spans rendered as code. */
+function rich(tag: 'p' | 'span', cls: string, text: string): HTMLElement {
+  const e = el(tag, cls);
+  text.split('`').forEach((part, i) => e.append(i % 2 ? el('code', undefined, part) : part));
+  return e;
+}
+
+/** One file: a one-line summary that opens to each signal's ask and why, plus links into the other panels. */
+function reviewRow(item: ReviewItem, open: boolean, show: ShowIn): HTMLElement {
+  const row = el('details', `rv-file rv-${item.level}`);
+  row.setAttribute('name', 'rv-file');
+  row.open = open;
+  row.dataset.path = item.path;
+  row.dataset.level = item.level;
+  const slash = item.path.lastIndexOf('/');
+  const summary = el('summary');
+  const name = el('span', 'rv-name');
+  name.append(el('span', 'rv-base', item.path.slice(slash + 1)), el('span', 'rv-dir', slash > 0 ? item.path.slice(0, slash) : ''));
+  const meta = el('span', 'rv-meta', `${item.status === 'added' ? 'new · ' : item.status === 'removed' ? 'deleted · ' : ''}${signed(item.code)}`);
+  const shorts = item.signals.map((x) => x.short);
+  const reasons = el('span', 'rv-reasons', shorts.slice(0, 3).join(' · ') + (shorts.length > 3 ? ` · +${shorts.length - 3}` : ''));
+  summary.append(el('span', 'rv-dot'), name, meta, reasons);
+  const body = el('div', 'rv-body');
+  for (const x of item.signals) {
+    const sig = el('div', 'rv-sig');
+    sig.dataset.kind = x.kind;
+    sig.append(rich('p', 'rv-title', x.title), rich('p', 'rv-ask', x.ask), el('p', 'rv-why', x.why));
+    body.append(sig);
+  }
+  const links = el('div', 'rv-links');
+  const link = (label: string, panel: 'treemap' | 'edges') => {
+    const b = el('button', 'rv-link', label);
+    b.type = 'button';
+    b.dataset.show = panel;
+    b.addEventListener('click', () => show(item.path, panel));
+    return b;
+  };
+  links.append(link('Show in treemap', 'treemap'));
+  if (show.hasEdges(item.path)) links.append(link('Show in dependency graph', 'edges'));
+  body.append(links);
+  row.append(summary, body);
+  return row;
+}
+
 export function createCompareView(root: HTMLElement, deps: CompareDeps): CompareView {
   root.classList.add('compare');
   const summary = el('div', 'summary-bar cmp-summary');
-  const toolbar = createCompareToolbar((base, head) => {
-    if (base) deps.writeParam('base', base);
-    if (head) deps.writeParam('head', head);
-    show();
-  });
+  const toolbar = createCompareToolbar(
+    (base, head) => {
+      if (base) deps.writeParam('base', base);
+      if (head) deps.writeParam('head', head);
+      deps.writeParam('pr', null); // a hand-picked pair is not a PR
+      deps.writeParam('prmode', null);
+      show();
+    },
+    (pick) => void reviewPr(pick),
+  );
+  /** Recently merged branches are asked for once, the first time the view is shown. */
+  let mergesAsked = false;
   const empty = el('p', 'cmp-empty muted', 'Pick a base and a head to compare.');
   const body = el('div', 'cmp-body');
   body.hidden = true;
+
+  // Panel 0: changed files ranked by review risk, with reasons.
+  const reviewPanel = el('section', 'cmp-panel cmp-review');
+  const reviewHead = el('div', 'cmp-panel-head');
+  const reviewSub = el('p', 'rv-sub');
+  reviewHead.append(el('h3', undefined, 'Start here'), reviewSub);
+  const reviewList = el('div', 'rv-list');
+  reviewPanel.append(reviewHead, reviewList);
 
   // Panel 1: delta treemap.
   const tmPanel = el('section', 'cmp-panel cmp-tm');
@@ -153,7 +222,7 @@ export function createCompareView(root: HTMLElement, deps: CompareDeps): Compare
   const panelSwitch = el('div', 'segmented cmp-panel-switch');
   panelSwitch.setAttribute('role', 'group');
   panelSwitch.setAttribute('aria-label', 'Panel');
-  const panelEls: Record<Panel, HTMLElement> = { treemap: tmPanel, edges: edgePanel };
+  const panelEls: Record<Panel, HTMLElement> = { review: reviewPanel, treemap: tmPanel, edges: edgePanel };
   const panelButtons = PANELS.map(([name, label]) => {
     const b = el('button', undefined, label);
     b.type = 'button';
@@ -162,7 +231,7 @@ export function createCompareView(root: HTMLElement, deps: CompareDeps): Compare
     panelSwitch.append(b);
     return b;
   });
-  body.append(panelSwitch, tmPanel, edgePanel);
+  body.append(panelSwitch, reviewPanel, tmPanel, edgePanel);
   root.replaceChildren(summary, toolbar.el, empty, body);
 
   let index: SnapshotIndex | null = null;
@@ -191,6 +260,38 @@ export function createCompareView(root: HTMLElement, deps: CompareDeps): Compare
     return /^[0-9a-f]{40}$/.test(ref) || !ref ? short(side.sha) : ref;
   }
 
+  /** Compare a branch with where it left main (what its PR showed) and open the review list. */
+  async function reviewPr(pick: PrPick): Promise<void> {
+    let range: { base: string; head: string };
+    let label: string;
+    let single = false;
+    if (pick.merged) {
+      range = pick.merged;
+      single = pick.merged.kind === 'squash';
+      label = pick.merged.pr ? `#${pick.merged.pr} ${pick.merged.name}` : pick.merged.name;
+    } else if (pick.ref && deps.source.pr) {
+      const my = ++seq;
+      toolbar.setStatus(`Finding where ${pick.ref} left main…`, 'busy');
+      try {
+        range = await deps.source.pr(pick.ref);
+      } catch (err) {
+        if (my === seq) toolbar.setStatus(`Could not review ${pick.ref}: ${(err as Error).message}`, 'error');
+        return;
+      }
+      if (my !== seq) return;
+      label = pick.ref;
+      single = !!(range as PrRange).single;
+    } else return;
+    deps.writeParam('base', range.base);
+    deps.writeParam('head', range.head);
+    deps.writeParam('pr', label);
+    deps.writeParam('prmode', single ? 'single' : null);
+    deps.writeParam('panel', 'review');
+    show();
+    // Same comparison under another name: nothing reloads, so relabel the summary here.
+    if (state && state.diff.base.sha === range.base && state.diff.head.sha === range.head) renderSummary(state.diff);
+  }
+
   function renderSummary(diff: SnapshotDiff): void {
     const side = (s: { sha: string; ref: string }) => {
       const strong = el('strong', undefined, refLabel(s));
@@ -203,7 +304,10 @@ export function createCompareView(root: HTMLElement, deps: CompareDeps): Compare
       'muted',
       `files +${t.files.added} −${t.files.removed} ~${t.files.modified} renamed ${t.files.renamed} · code ${signed(t.code)} · edges +${t.edges.added} −${t.edges.removed}`,
     );
-    summary.replaceChildren(...side(diff.base), el('span', 'muted', '→'), ...side(diff.head), totals, deps.barExtra());
+    const pr = deps.readParam('pr');
+    const how = deps.readParam('prmode') === 'single' ? 'as its one commit on main:' : 'from where it left main:';
+    const prTag = pr ? [el('span', 'cmp-pr-tag', `PR ${pr}`), el('span', 'muted', how)] : [];
+    summary.replaceChildren(...prTag, ...side(diff.base), el('span', 'muted', '→'), ...side(diff.head), totals, deps.barExtra());
   }
 
   function tipRows(f: FileEntry): Array<[string, string]> {
@@ -221,6 +325,56 @@ export function createCompareView(root: HTMLElement, deps: CompareDeps): Compare
     rows.push(['Complexity', `${signed(d.complexitySum)} sum / ${signed(d.complexityMax)} max`]);
     rows.push(['Churn', `${signed(d.churnCommits)} commits`]);
     return rows;
+  }
+
+  function renderReview(): void {
+    if (!state) return;
+    const items = reviewItems(state.diff, state.head);
+    const by = (level: ReviewItem['level']) => items.filter((i) => i.level === level);
+    const high = by('high');
+    const medium = by('medium');
+    const low = by('low');
+    const none = by('none');
+    const counts = [
+      high.length && `${plural(high.length, 'file')} to look at closely`,
+      medium.length && `${fmt(medium.length)} worth a look`,
+      low.length && `${fmt(low.length)} minor`,
+    ].filter(Boolean);
+    reviewSub.textContent = counts.length
+      ? `${counts.join(' · ')}, out of ${fmt(items.length)} changed. Open a file to see what to ask.`
+      : `Nothing stood out in ${plural(items.length, 'changed file')}.`;
+    const first = (high[0] ?? medium[0])?.path;
+    const graphFiles = new Set([...state.diff.edges.added, ...state.diff.edges.removed].flatMap((e) => [e.from, e.to]));
+    const show: ShowIn = Object.assign((path: string, target: 'treemap' | 'edges') => showIn(path, target), {
+      hasEdges: (path: string) => graphFiles.has(path),
+    });
+    const section = (title: string, list: ReviewItem[]) => {
+      const sec = el('section', 'rv-section');
+      sec.append(el('h4', undefined, title), ...list.map((i) => reviewRow(i, i.path === first, show)));
+      return sec;
+    };
+    const parts: HTMLElement[] = [];
+    if (high.length) parts.push(section('Look closely', high));
+    if (medium.length) parts.push(section('Worth a look', medium));
+    if (low.length || none.length) {
+      const rest = el('details', 'rv-rest');
+      const label = [low.length && `${fmt(low.length)} minor`, none.length && `${fmt(none.length)} with nothing flagged`].filter(Boolean).join(', ');
+      rest.append(el('summary', undefined, `Everything else (${label})`), ...low.map((i) => reviewRow(i, false, show)));
+      const quietList = el('ul', 'rv-quiet-list');
+      for (const item of none) quietList.append(el('li', undefined, `${item.path}  ${signed(item.code)}`));
+      if (none.length) rest.append(quietList);
+      parts.push(rest);
+    }
+    reviewList.replaceChildren(...parts);
+  }
+
+  /** Switch to a panel and point at one file there. */
+  function showIn(path: string, target: 'treemap' | 'edges'): void {
+    setPanel(target);
+    if (target === 'treemap') treemap?.reveal(path);
+    else if (graph && !graph.reveal(path)) {
+      toolbar.setStatus(`${path} has no changed imports to show`);
+    }
   }
 
   function renderTreemap(): void {
@@ -291,6 +445,7 @@ export function createCompareView(root: HTMLElement, deps: CompareDeps): Compare
     const { diff, head } = deps.filter(raw.diff, raw.head);
     state = { diff, head, deltas: new Map(diff.files.map((d) => [d.path, d])) };
     renderSummary(state.diff);
+    renderReview();
     renderTreemap();
     renderEdges();
   }
@@ -327,6 +482,15 @@ export function createCompareView(root: HTMLElement, deps: CompareDeps): Compare
   }
 
   function show(): void {
+    if (!mergesAsked) {
+      mergesAsked = true;
+      if (deps.source.merges) {
+        deps.source.merges().then(
+          (list) => toolbar.setMerges(list),
+          () => toolbar.setMerges({ baseRef: null, merges: [] }),
+        );
+      } else toolbar.setMerges(null);
+    }
     const nextPanel = readPanel(deps.readParam('panel'));
     if (nextPanel !== panel) {
       panel = nextPanel;
