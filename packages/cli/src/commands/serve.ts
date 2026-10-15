@@ -4,6 +4,7 @@ import { DEFAULT_SINCE, parseSince } from '@codeviz/analyzers';
 import type { Snapshot } from '@codeviz/core';
 import { analyzeRef } from '../analyze.ts';
 import { listSnapshots, readSnapshot } from '../cache.ts';
+import { compileGlob } from '@codeviz/core';
 import { loadOverlays, reportUnmatched, type Overlay } from '../overlay.ts';
 import { resolveRef } from '../refs.ts';
 import { repoId, repoName } from '../repo.ts';
@@ -12,7 +13,7 @@ import { readTrace } from '../trace/format.ts';
 import { TraceStore } from '../trace/live.ts';
 import { version } from '../version.ts';
 
-export const serveUsage = 'codeviz serve [--port <n>] [--since <90d|6m|1y|YYYY-MM-DD>] [--open] [--no-analyze] [--overlay <file>]... [--trace <file>]... [--trace-listen] [--trace-port <n>]';
+export const serveUsage = 'codeviz serve [--port <n>] [--since <90d|6m|1y|YYYY-MM-DD>] [--open] [--no-analyze] [--overlay <file>]... [--trace <file>]... [--trace-listen] [--trace-port <n>] [--entry <glob>]...';
 
 function listen(server: http.Server, port: number): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -54,6 +55,7 @@ export async function serveCommand(args: string[]): Promise<number> {
   let analyze = true;
   const overlayFiles: string[] = [];
   const traceFiles: string[] = [];
+  const entries: string[] = [];
   let traceListen = false;
   let tracePort: number | undefined;
   for (let i = 0; i < args.length; i++) {
@@ -68,6 +70,15 @@ export async function serveCommand(args: string[]): Promise<number> {
       const v = a === '--trace' ? args[++i] : a.slice('--trace='.length);
       if (!v) return fail('--trace needs a file');
       traceFiles.push(v);
+    } else if (a === '--entry' || a.startsWith('--entry=')) {
+      const v = a === '--entry' ? args[++i] : a.slice('--entry='.length);
+      if (!v) return fail('--entry needs a glob');
+      try {
+        compileGlob(v);
+      } catch (err) {
+        return fail((err as Error).message);
+      }
+      entries.push(v);
     } else if (a === '--trace-listen') traceListen = true;
     else if (a === '--trace-port' || a.startsWith('--trace-port=')) {
       const v = a === '--trace-port' ? args[++i] : a.slice('--trace-port='.length);
@@ -171,7 +182,7 @@ export async function serveCommand(args: string[]): Promise<number> {
     ingestUrl = `http://${HOST}:${tracePort}/trace`;
   }
 
-  const started = await startServer({ root, since, port, log, overlays, traces, traceListen });
+  const started = await startServer({ root, since, port, log, overlays, traces, traceListen, entries });
   if (typeof started === 'string') return fail(started);
   if (traceListen) {
     const where = ingestUrl ?? `${started.url}/trace`;
@@ -192,9 +203,10 @@ export async function startServer(opts: {
   overlays?: Overlay[];
   traces?: TraceStore;
   traceListen?: boolean;
+  entries?: string[];
 }): Promise<{ server: CodevizServer; url: string } | string> {
   const { port } = opts;
-  const server = createServer({ root: opts.root, since: opts.since, log: opts.log, worktree: opts.worktree, overlays: opts.overlays, traces: opts.traces, traceListen: opts.traceListen });
+  const server = createServer({ root: opts.root, since: opts.since, log: opts.log, worktree: opts.worktree, overlays: opts.overlays, traces: opts.traces, traceListen: opts.traceListen, entries: opts.entries });
   let bound: number | undefined;
   for (let attempt = 0; attempt < 10 && bound === undefined; attempt++) {
     try {

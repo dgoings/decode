@@ -93,7 +93,8 @@ export async function withCheckout<T>(
   };
   process.on('SIGINT', onSigint);
   try {
-    git(root, ['worktree', 'add', '--detach', tmp, resolved.sha]);
+    // Hooks off: a repo's post-checkout hook (installs, deploys, prompts) must not run for our temp checkout.
+    git(root, ['-c', 'core.hooksPath=/dev/null', 'worktree', 'add', '--detach', tmp, resolved.sha]);
     return await fn(tmp);
   } finally {
     process.off('SIGINT', onSigint);

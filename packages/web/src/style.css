@@ -169,6 +169,58 @@ header .view-switch button { font-size: 13px; padding: 3px 14px; }
 .cmp-panel-head .segmented { margin-left: auto; }
 .cmp-check { font-size: 12px; display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
 .cmp-tm > .treemap { flex: 1; min-height: 0; }
+.cmp-plan { overflow: auto; }
+.cmp-plan[hidden] { display: none; }
+.tp-copy { font: inherit; font-size: 12px; margin-left: auto; padding: 2px 8px; cursor: pointer; }
+.tp-body { display: flex; flex-direction: column; gap: 14px; min-height: 0; max-width: 1080px; }
+.tp-msg { margin: 8px 0; font-size: 13px; line-height: 1.5; }
+.tp-error { color: var(--error); }
+.tp-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 11px; }
+.tp-key { display: inline-flex; align-items: center; gap: 5px; }
+.tp-sw { width: 14px; height: 10px; border-radius: 3px; border: 1.5px solid; }
+.tp-sw-changed { width: 8px; height: 8px; border-radius: 50%; border: 0; background: #e8590c; }
+.tp-screen { border: 1px solid var(--line); border-radius: 6px; padding: 10px 14px; background: var(--panel); }
+.tp-screen h4 { margin: 0 0 6px; font-size: 15px; display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.tp-route { font-size: 12px; font-weight: 400; color: var(--muted); }
+.tp-area { margin-top: 10px; }
+.tp-area-name { font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); margin-bottom: 4px; }
+.tp-file-name { font-size: 11px; margin: 8px 0 2px; word-break: break-all; }
+.tp-step { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px; align-items: start; padding: 10px 0; border-top: 1px solid var(--line); }
+.tp-step:first-of-type { border-top: 0; }
+.tp-step > input { margin-top: 3px; }
+.tp-text { font-size: 14px; font-weight: 600; line-height: 1.4; cursor: pointer; }
+.tp-checks { margin: 4px 0 0; padding-left: 18px; font-size: 13px; line-height: 1.45; }
+.tp-how, .tp-why { font-size: 12px; margin-top: 4px; line-height: 1.4; }
+.tp-where { font-size: 11px; margin-top: 2px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+.tp-done .tp-text { text-decoration: line-through; color: var(--muted); }
+.tp-done .tp-checks { color: var(--muted); }
+.tp-flow { overflow-x: auto; max-width: 100%; }
+.tp-note { margin: 6px 0 0; font-size: 12px; }
+.tp-chains { margin-top: 8px; font-size: 12px; }
+.tp-chains summary, .tp-unreached summary { cursor: pointer; }
+.tp-chains ul, .tp-unreached ul { margin: 4px 0 0; padding-left: 18px; word-break: break-all; }
+.cmp-plan code { font-size: 12px; }
+@media (max-width: 960px) { .tp-step { grid-template-columns: auto minmax(0, 1fr); } .tp-flow { grid-column: 2; } }
+.fl { display: block; }
+.fl-edge { fill: none; stroke: #9aa3af; stroke-width: 1.4; }
+.fl-arrow { fill: #9aa3af; }
+.fl-node rect { stroke-width: 1.4; }
+.fl-node .fl-title { font-size: 11.5px; font-weight: 600; fill: var(--fg); }
+.fl-node .fl-sub { font-size: 9.5px; fill: var(--muted); }
+.fl-node.changed rect { stroke-width: 2.2; }
+.fl-dot { fill: #e8590c; }
+.k-screen rect { fill: #eef1f6; stroke: #7b8799; }
+.k-element rect { fill: #e8f0ff; stroke: #2f6fdb; }
+.k-handler rect { fill: #f1eaff; stroke: #7c4dcc; }
+.k-call rect { fill: #e3f5ee; stroke: #1a8a63; }
+.k-state rect { fill: #fff3d6; stroke: #c28a00; }
+.k-component rect { fill: #f2f2f2; stroke: #8a8a8a; }
+.fl-node.changed.k-screen rect, .fl-node.changed.k-element rect, .fl-node.changed.k-handler rect, .fl-node.changed.k-call rect, .fl-node.changed.k-state rect, .fl-node.changed.k-component rect { stroke: #e8590c; }
+.tp-sw.k-screen { background: #eef1f6; border-color: #7b8799; }
+.tp-sw.k-element { background: #e8f0ff; border-color: #2f6fdb; }
+.tp-sw.k-handler { background: #f1eaff; border-color: #7c4dcc; }
+.tp-sw.k-call { background: #e3f5ee; border-color: #1a8a63; }
+.tp-sw.k-state { background: #fff3d6; border-color: #c28a00; }
 .cmp-legend { flex-wrap: wrap; }
 .cmp-swatch { width: 18px; height: 12px; border-radius: 2px; margin-left: 6px; background: #e1e4e8; }
 .sw-grow { background: linear-gradient(to right, rgba(31, 136, 61, 0.6) 45%, #e1e4e8 45%); }
