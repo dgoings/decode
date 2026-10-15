@@ -1,6 +1,7 @@
 import { analyzeCommand, analyzeUsage } from './commands/analyze.ts';
 import { compareCommand, compareUsage } from './commands/compare.ts';
 import { exportCommand, exportUsage } from './commands/export.ts';
+import { prCommand, prUsage } from './commands/pr.ts';
 import { publishCommand, publishUsage } from './commands/publish.ts';
 import { serveCommand, serveUsage } from './commands/serve.ts';
 import { version } from './version.ts';
@@ -9,6 +10,7 @@ const usage = `codeviz ${version}
 
 Usage:
   ${analyzeUsage}
+  ${prUsage}
   ${compareUsage}
   ${serveUsage}
   ${exportUsage}
@@ -20,6 +22,7 @@ Usage:
 
 const commands: Record<string, (args: string[]) => Promise<number>> = {
   analyze: analyzeCommand,
+  pr: prCommand,
   compare: compareCommand,
   serve: serveCommand,
   export: exportCommand,

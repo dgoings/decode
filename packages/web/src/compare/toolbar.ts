@@ -1,18 +1,83 @@
-import { WORKTREE, type SnapshotIndex } from '../data.ts';
+import { WORKTREE, type MergedBranch, type SnapshotIndex } from '../data.ts';
 
 export interface CompareToolbar {
   readonly el: HTMLElement;
   setIndex(index: SnapshotIndex): void;
+  /** Fill the "Review a PR" picker; null hides it (static exports have no git to ask). */
+  setMerges(list: { baseRef: string | null; merges: MergedBranch[] } | null): void;
   setValue(base: string | null, head: string | null): void;
   setStatus(text: string, kind?: 'info' | 'error' | 'busy'): void;
 }
 
 const short = (sha: string) => (sha === WORKTREE ? sha : sha.slice(0, 7));
 
-/** Base / Head selects fed from the snapshot index. Unanalyzed branches and tags are listed disabled. */
-export function createCompareToolbar(onChange: (base: string | null, head: string | null) => void): CompareToolbar {
+/** "3 days ago" style age for a unix-seconds time. */
+function ago(seconds: number, now = Date.now() / 1000): string {
+  const d = Math.max(0, now - seconds);
+  const unit = (n: number, u: string) => `${n} ${u}${n === 1 ? '' : 's'} ago`;
+  if (d < 3600) return unit(Math.max(1, Math.round(d / 60)), 'minute');
+  if (d < 86400) return unit(Math.round(d / 3600), 'hour');
+  if (d < 86400 * 60) return unit(Math.round(d / 86400), 'day');
+  return unit(Math.round(d / (86400 * 30)), 'month');
+}
+
+export interface PrPick {
+  /** A merged branch from the list: its range is already known. */
+  merged?: MergedBranch;
+  /** A branch or commit typed in: the server works out its range. */
+  ref?: string;
+}
+
+/**
+ * "Review a PR" (a merged branch from the list, or any branch / commit) on top, which compares a
+ * branch with where it left main; below it the manual Base / Head selects fed from the snapshot
+ * index, with unanalyzed branches and tags listed disabled.
+ */
+export function createCompareToolbar(
+  onChange: (base: string | null, head: string | null) => void,
+  onPr: (pick: PrPick) => void,
+): CompareToolbar {
   const el = document.createElement('div');
   el.className = 'cmp-toolbar';
+
+  const prRow = document.createElement('form');
+  prRow.className = 'cmp-pr';
+  prRow.hidden = true;
+  const prLabel = document.createElement('span');
+  prLabel.className = 'cmp-pr-label';
+  prLabel.textContent = 'Review a PR';
+  const mergedSelect = document.createElement('select');
+  mergedSelect.name = 'merged';
+  const orText = document.createElement('span');
+  orText.className = 'muted';
+  orText.textContent = 'or';
+  const refInput = document.createElement('input');
+  refInput.name = 'pr-ref';
+  refInput.type = 'text';
+  refInput.placeholder = 'branch or commit';
+  refInput.spellcheck = false;
+  refInput.autocomplete = 'off';
+  const go = document.createElement('button');
+  go.type = 'submit';
+  go.textContent = 'Review';
+  const prHint = document.createElement('span');
+  prHint.className = 'cmp-pr-hint muted';
+  prHint.textContent = 'Compares the branch with where it left main, like its PR did. Squash merges show as their one commit.';
+  prRow.append(prLabel, mergedSelect, orText, refInput, go, prHint);
+  let merges: MergedBranch[] = [];
+  mergedSelect.addEventListener('change', () => {
+    const m = merges[Number(mergedSelect.value)];
+    if (m) onPr({ merged: m });
+  });
+  prRow.addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    const ref = refInput.value.trim();
+    if (ref) onPr({ ref });
+  });
+
+  const manual = document.createElement('div');
+  manual.className = 'cmp-manual';
+  el.append(prRow, manual);
   const make = (label: string) => {
     const wrap = document.createElement('label');
     wrap.className = 'cmp-pick';
@@ -22,7 +87,7 @@ export function createCompareToolbar(onChange: (base: string | null, head: strin
     select.name = label.toLowerCase();
     select.addEventListener('change', () => onChange(base.value || null, head.value || null));
     wrap.append(text, select);
-    el.append(wrap);
+    manual.append(wrap);
     return select;
   };
   const base = make('Base');
@@ -33,7 +98,7 @@ export function createCompareToolbar(onChange: (base: string | null, head: strin
   const head = make('Head');
   const status = document.createElement('span');
   status.className = 'cmp-status';
-  el.append(status);
+  manual.append(status);
 
   let index: SnapshotIndex | null = null;
   let want: [string | null, string | null] = [null, null];
@@ -84,9 +149,30 @@ export function createCompareToolbar(onChange: (base: string | null, head: strin
       index = next;
       render();
     },
+    setMerges(list) {
+      prRow.hidden = !list;
+      merges = list?.merges ?? [];
+      const into = list?.baseRef ? ` into ${list.baseRef}` : '';
+      const first = document.createElement('option');
+      first.value = '';
+      first.textContent = merges.length ? `Recently merged${into}…` : 'No merged branches found';
+      mergedSelect.replaceChildren(first);
+      mergedSelect.disabled = !merges.length;
+      merges.forEach((m, i) => {
+        const o = document.createElement('option');
+        o.value = String(i);
+        const pr = m.pr ? `#${m.pr} ` : '';
+        const size = m.kind === 'squash' ? 'squashed' : `${m.commits} commit${m.commits === 1 ? '' : 's'}`;
+        o.textContent = `${pr}${m.name} · ${size} · ${ago(m.date)}`;
+        mergedSelect.append(o);
+      });
+    },
     setValue(b, h) {
       want = [b, h];
       render();
+      // The merged picker shows a choice only while that exact comparison is on screen.
+      const i = merges.findIndex((m) => m.base === b && m.head === h);
+      mergedSelect.value = i >= 0 ? String(i) : '';
     },
     setStatus(text, kind = 'info') {
       status.replaceChildren();

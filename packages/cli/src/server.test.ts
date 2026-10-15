@@ -127,3 +127,33 @@ test('traces: list, fetch, live post and SSE stream', async () => {
     srv.close();
   }
 });
+
+test('pr and merges: a merged, deleted branch is found and its PR range resolved', async () => {
+  const main = git('rev-parse', '--abbrev-ref', 'HEAD');
+  git('checkout', '-qb', 'gone');
+  fs.writeFileSync(path.join(repo, 'b.ts'), 'export const b = 1;\n');
+  git('add', '.');
+  git('commit', '-qm', 'b');
+  const tip = git('rev-parse', 'HEAD');
+  git('checkout', '-q', main);
+  git('merge', '-q', '--no-ff', '-m', 'Merge gone', 'gone');
+  git('branch', '-qD', 'gone');
+
+  const m = await (await fetch(`${base}/api/merges`)).json();
+  expect(m.baseRef).toBe(main);
+  expect(m.merges[0].name).toBe('gone');
+  expect(m.merges[0].head).toBe(tip);
+
+  const pr = await fetch(`${base}/api/pr?head=${tip}`);
+  expect(pr.status).toBe(200);
+  const range = await pr.json();
+  expect(range.head).toBe(tip);
+  expect(range.base).toBe(git('rev-parse', 'HEAD^1'));
+  expect(range.mergedIn).toBe(git('rev-parse', 'HEAD'));
+
+  const nothing = await fetch(`${base}/api/pr?head=${main}`);
+  expect(nothing.status).toBe(400);
+  expect((await nothing.json()).error).toMatch(/no commits/);
+  expect((await fetch(`${base}/api/pr?head=nope`)).status).toBe(400);
+  expect((await fetch(`${base}/api/pr`)).status).toBe(400);
+});

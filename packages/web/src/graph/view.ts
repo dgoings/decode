@@ -33,6 +33,8 @@ export interface GraphView {
   setColorMode(mode: ColorMode, force?: boolean): void;
   /** Hide or show all edges without moving any node. */
   setShowEdges(on: boolean): void;
+  /** Open the groups holding a node, select it with its edges and fit them; false when it is not drawn. */
+  reveal(id: string): boolean;
   /** For overlays (the trace player). Edges with class `rt` are theirs, and they are left out of layout. */
   readonly cy: Core;
   model(): GraphModel | null;
@@ -511,6 +513,24 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions =
     cy.fit(nodes, 60);
   }
 
+  function reveal(id: string): boolean {
+    if (!model?.nodes.has(id)) return false;
+    let changed = false;
+    for (const a of ancestors(model, id)) if (collapsed.delete(a)) changed = true;
+    if (changed) {
+      update(false);
+      runLayout();
+    }
+    cy.elements().unselect();
+    const node = cy.getElementById(id);
+    if (node.empty() || node.hasClass('unchanged-hidden')) return false;
+    node.select();
+    node.connectedEdges().not('.unchanged-hidden').select();
+    // After any pending fitVisible (also a frame away, queued earlier), so this zoom wins.
+    requestAnimationFrame(() => cy.fit(node.closedNeighborhood().not('.unchanged-hidden'), 60));
+    return true;
+  }
+
   function renderSide(): void {
     if (!model) return;
     const h = document.createElement('h3');
@@ -759,6 +779,7 @@ export function createGraphView(container: HTMLElement, opts: GraphViewOptions =
         });
       });
     },
+    reveal,
     setShowEdges(on) {
       if (on === showEdges) return;
       showEdges = on;
