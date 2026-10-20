@@ -61,3 +61,23 @@ test('refName: branch for HEAD, tag as given, short sha otherwise', () => {
   expect([refName(repo, 'HEAD', git('rev-parse', 'HEAD')), refName(repo, 'v1', v1), refName(repo, v1, v1)])
     .toEqual(['main', 'v1', v1.slice(0, 12)]);
 });
+
+test('the temporary checkout does not run the repo\'s git hooks', async () => {
+  const hooks = path.join(repo, '.githooks');
+  const marker = path.join(repo, 'hook-ran');
+  fs.mkdirSync(hooks);
+  fs.writeFileSync(path.join(hooks, 'post-checkout'), `#!/bin/sh\ntouch '${marker}'\n`, { mode: 0o755 });
+  git('config', 'core.hooksPath', '.githooks');
+  try {
+    await withCheckout(repo, resolveRef(repo, 'v1'), async () => undefined);
+    expect(fs.existsSync(marker)).toBe(false);
+    // Sanity: the hook is live for an ordinary checkout, so the assertion above means something.
+    git('checkout', '-q', '--detach', 'v1');
+    expect(fs.existsSync(marker)).toBe(true);
+  } finally {
+    git('checkout', '-q', 'main');
+    git('config', '--unset', 'core.hooksPath');
+    fs.rmSync(hooks, { recursive: true, force: true });
+    fs.rmSync(marker, { force: true });
+  }
+});

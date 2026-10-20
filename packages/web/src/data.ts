@@ -1,6 +1,6 @@
-import type { LanguageTier, Snapshot, SnapshotDiff } from '@codeviz/core';
+import type { LanguageTier, Snapshot, SnapshotDiff, TestPlan } from '@codeviz/core';
 
-export type { LanguageTier, Snapshot, SnapshotDiff };
+export type { LanguageTier, Snapshot, SnapshotDiff, TestPlan };
 
 /** Sentinel "sha" for the uncommitted working tree. */
 export const WORKTREE = 'WORKTREE';
@@ -103,6 +103,8 @@ export interface DataSource {
   analyze?(ref: string): Promise<{ sha: string }>;
   /** Diff two refs; blocks until both are analyzed. `head` may be WORKTREE. */
   compare?(base: string, head: string): Promise<SnapshotDiff>;
+  /** Manual UI test plan for a change (needs the live server: it reads source and runs git). */
+  testplan?(base: string, head: string): Promise<TestPlan>;
   /** The PR range for a branch or commit (live server only). */
   pr?(head: string): Promise<PrRange>;
   /** Recently merged branches, newest first (live server only). */
@@ -164,6 +166,11 @@ export class ApiDataSource implements DataSource {
   compare(base: string, head: string): Promise<SnapshotDiff> {
     const q = new URLSearchParams({ base, head });
     return getJson(`${this.base}/compare?${q}`);
+  }
+
+  testplan(base: string, head: string): Promise<TestPlan> {
+    const q = new URLSearchParams({ base, head });
+    return getJson(`${this.base}/testplan?${q}`);
   }
 
   pr(head: string): Promise<PrRange> {

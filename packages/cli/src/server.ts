@@ -4,10 +4,11 @@ import * as http from 'node:http';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gunzipSync, gzipSync } from 'node:zlib';
-import { decodeSnapshot, encodeSnapshot, type Snapshot } from '@codeviz/core';
+import { compileGlob, decodeSnapshot, encodeSnapshot, planMarkdown, type Snapshot, type TestPlan } from '@codeviz/core';
 import { cacheDir, type SnapshotSummary } from './cache.ts';
 import { compareRefs } from './compare.ts';
 import { summarize, type Overlay } from './overlay.ts';
+import { buildTestPlan } from './testplan.ts';
 import { defaultBranch, prRange, recentMerges, type PrRange } from './pr.ts';
 import { resolveRef } from './refs.ts';
 import { TraceStore } from './trace/live.ts';
@@ -26,6 +27,8 @@ export interface ServerOptions {
   traces?: TraceStore;
   /** `--trace-listen`: accept live ticks (POST /trace, the Bun preload's body shape) on this server. */
   traceListen?: boolean;
+  /** From `--entry`: globs for files to treat as screens in the test plan, on top of file-based routing. */
+  entries?: string[];
 }
 
 const MIME: Record<string, string> = {
@@ -286,6 +289,56 @@ export function createServer(opts: ServerOptions): CodevizServer {
     }
   }
 
+  /** Plans by commits and entries. Holds in-flight promises too, so concurrent identical requests share one build. */
+  const planCache = new Map<string, Promise<TestPlan>>();
+
+  async function handleTestPlan(req: http.IncomingMessage, res: http.ServerResponse, url: URL): Promise<void> {
+    const base = url.searchParams.get('base');
+    const head = url.searchParams.get('head');
+    if (!base || !head) return sendJson(res, 400, { error: 'base and head are required' });
+    if (base === 'WORKTREE') return sendJson(res, 400, { error: 'WORKTREE can only be the head of a comparison' });
+    try {
+      resolveRef(root, base);
+      resolveRef(root, head);
+    } catch (err) {
+      return sendJson(res, 400, { error: err instanceof Error ? err.message : String(err) });
+    }
+    const entries = [...(opts.entries ?? []), ...url.searchParams.getAll('entry')];
+    try {
+      if (entries.length > 20) throw new Error('at most 20 entry globs');
+      for (const e of entries) compileGlob(e);
+    } catch (err) {
+      return sendJson(res, 400, { error: err instanceof Error ? err.message : String(err) });
+    }
+    // A plan for two commits never changes; WORKTREE is recomputed each time.
+    const key = head === 'WORKTREE' ? null : `${resolveRef(root, base).sha}\0${resolveRef(root, head).sha}\0${entries.join('\n')}`;
+    try {
+      let pending = key ? planCache.get(key) : undefined;
+      if (!pending) {
+        const build = async (): Promise<TestPlan> => {
+          await Promise.all([analyze(base), head === 'WORKTREE' && worktree ? null : analyze(head)]);
+          return track(buildTestPlan(root, base, head, { since: opts.since, log, worktree, entries }));
+        };
+        pending = build();
+        if (key) {
+          planCache.set(key, pending);
+          pending.catch(() => planCache.delete(key)); // failures are retried, not remembered
+          if (planCache.size > 16) planCache.delete(planCache.keys().next().value!);
+        }
+      }
+      const plan = await pending;
+      if (url.searchParams.get('format') === 'md') {
+        const body = planMarkdown(plan);
+        res.writeHead(200, { 'Content-Type': 'text/markdown; charset=utf-8', 'Content-Length': Buffer.byteLength(body) });
+        res.end(body);
+        return;
+      }
+      sendGzippedJson(req, res, gzipSync(JSON.stringify(plan)));
+    } catch (err) {
+      sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
   /** What a PR from `head` would show: the same range `codeviz pr` reviews (merged branches included). */
   function handlePr(res: http.ServerResponse, url: URL): void {
     const head = url.searchParams.get('head')?.trim();
@@ -390,6 +443,7 @@ export function createServer(opts: ServerOptions): CodevizServer {
     }
     if (p === '/api/analyze' && method === 'POST') return handleAnalyze(req, res);
     if (p === '/api/compare' && method === 'GET') return handleCompare(req, res, url);
+    if (p === '/api/testplan' && method === 'GET') return handleTestPlan(req, res, url);
     if (p === '/api/pr' && method === 'GET') return handlePr(res, url);
     if (p === '/api/merges' && method === 'GET') return handleMerges(res, url);
     if (p.startsWith('/api/')) return sendJson(res, 404, { error: 'not found' });

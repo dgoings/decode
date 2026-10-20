@@ -6,6 +6,7 @@ import { createGraphView, type GraphView } from '../graph/view.ts';
 import { createTreemap, type Treemap } from '../treemap.ts';
 import { deltaFiles, sliceFor } from './model.ts';
 import { reviewItems, type ReviewItem } from './review.ts';
+import { createTestPlanPanel } from './testplan.ts';
 import { createCompareToolbar, type PrPick } from './toolbar.ts';
 
 export interface CompareDeps {
@@ -32,14 +33,15 @@ export interface CompareView {
   refresh(): void;
 }
 
-type Panel = 'review' | 'treemap' | 'edges';
+type Panel = 'review' | 'treemap' | 'edges' | 'plan';
 const PANELS: Array<[Panel, string]> = [
   ['review', 'Look here first'],
   ['treemap', 'Treemap'],
   ['edges', 'Edges'],
+  ['plan', 'Test plan'],
 ];
 /** Anything else (including the retired `changes`) falls back to the review list. */
-const readPanel = (v: string | null): Panel => (v === 'edges' || v === 'treemap' ? v : 'review');
+const readPanel = (v: string | null): Panel => (v === 'edges' || v === 'treemap' || v === 'plan' ? v : 'review');
 const NEUTRAL_FILL = '#e1e4e8';
 /** GitHub's diff addition / deletion colors. */
 const GROW = '#1f883d';
@@ -222,7 +224,9 @@ export function createCompareView(root: HTMLElement, deps: CompareDeps): Compare
   const panelSwitch = el('div', 'segmented cmp-panel-switch');
   panelSwitch.setAttribute('role', 'group');
   panelSwitch.setAttribute('aria-label', 'Panel');
-  const panelEls: Record<Panel, HTMLElement> = { review: reviewPanel, treemap: tmPanel, edges: edgePanel };
+  // Which screens the change affects and what to try on each (fetched when first shown).
+  const plan = createTestPlanPanel(deps.source);
+  const panelEls: Record<Panel, HTMLElement> = { review: reviewPanel, treemap: tmPanel, edges: edgePanel, plan: plan.el };
   const panelButtons = PANELS.map(([name, label]) => {
     const b = el('button', undefined, label);
     b.type = 'button';
@@ -231,7 +235,7 @@ export function createCompareView(root: HTMLElement, deps: CompareDeps): Compare
     panelSwitch.append(b);
     return b;
   });
-  body.append(panelSwitch, reviewPanel, tmPanel, edgePanel);
+  body.append(panelSwitch, reviewPanel, tmPanel, edgePanel, plan.el);
   root.replaceChildren(summary, toolbar.el, empty, body);
 
   let index: SnapshotIndex | null = null;
@@ -425,6 +429,7 @@ export function createCompareView(root: HTMLElement, deps: CompareDeps): Compare
     root.dataset.panel = panel;
     // The treemap redraws from its own ResizeObserver (0x0 -> visible); the graph needs an explicit fit.
     if (panel === 'edges') refitGraph();
+    if (panel === 'plan') plan.activate();
   }
 
   function setPanel(next: Panel): void {
@@ -463,6 +468,8 @@ export function createCompareView(root: HTMLElement, deps: CompareDeps): Compare
       const headSnap = await deps.snapshot(diff.head.sha);
       if (my !== seq) return;
       raw = { diff, head: headSnap };
+      plan.setTarget(base, head, diff.base.sha, diff.head.sha);
+      if (panel === 'plan') plan.activate();
       empty.hidden = true;
       body.hidden = false;
       renderAll();
@@ -504,6 +511,7 @@ export function createCompareView(root: HTMLElement, deps: CompareDeps): Compare
       loadedKey = null;
       raw = null;
       state = null;
+      plan.setTarget(null, null);
       body.hidden = true;
       empty.hidden = false;
       empty.textContent = 'Pick a base and a head to compare.';
